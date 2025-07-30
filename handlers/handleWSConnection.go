@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github/sabt-dev/realtimeChat/middleware"
 	"github/sabt-dev/realtimeChat/models"
 
 	"github.com/gin-gonic/gin"
@@ -215,7 +216,7 @@ func HandleWSConnection(c *gin.Context) {
 	}
 
 	// Convert user to SessionUser
-	user, ok := userInterface.(*SessionUser)
+	user, ok := userInterface.(*middleware.SessionUser)
 	if !ok {
 		log.Printf("Invalid user type in context")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user data"})

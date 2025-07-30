@@ -124,6 +124,15 @@ function joinRoom() {
         return;
     }
 
+    // Check if already in the same room
+    if (currentRoom === room && isConnected && ws && ws.readyState === WebSocket.OPEN) {
+        debugLog(`Already in room: ${room}, refreshing messages`);
+        // Clear and reload messages for a fresh view
+        clearMessages();
+        loadRoomHistory(false); // Don't clear again since we just did
+        return;
+    }
+
     currentRoom = room;
 
     debugLog(`Attempting to join room: ${room} as user: ${username}`);
@@ -156,7 +165,7 @@ function connectWebSocket() {
             ws.send(JSON.stringify(joinRequest));
             isConnected = true;
             updateUI();
-            loadRoomHistory();
+            loadRoomHistory(true); // Always clear when establishing new WebSocket connection
         } catch (error) {
             debugLog(`Error sending join request: ${error}`);
         }
@@ -267,6 +276,12 @@ function displayMessage(message) {
     debugLog(`Message successfully displayed in UI`);
 }
 
+function clearMessages() {
+    debugLog('Clearing all messages from UI');
+    messagesContainer.innerHTML = '';
+    debugLog('Messages cleared successfully');
+}
+
 function updateUI() {
     loginScreen.classList.add('hidden');
     chatInterface.classList.remove('hidden');
@@ -287,10 +302,15 @@ function updateConnectionStatus(status) {
     }
 }
 
-function loadRoomHistory() {
+function loadRoomHistory(clearFirst = true) {
     if (!isAuthenticated) {
         debugLog('Not authenticated, skipping room history load');
         return;
+    }
+    
+    // Clear existing messages when joining a new room (optional)
+    if (clearFirst) {
+        clearMessages();
     }
     
     debugLog(`Loading room history for: ${currentRoom}`);

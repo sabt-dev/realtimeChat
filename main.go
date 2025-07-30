@@ -18,7 +18,7 @@ func main() {
 	}
 
 	// Initialize authentication
-	handlers.InitAuth()
+	middleware.InitAuth()
 
 	// Start the chat hub
 	handlers.StartHub()
@@ -29,14 +29,14 @@ func main() {
 	r.Static("/static", "./static")
 
 	// Authentication routes
-	r.GET("/auth/:provider", handlers.BeginAuth)
-	r.GET("/auth/:provider/callback", handlers.AuthCallback)
-	r.POST("/auth/logout", handlers.Logout)
-	r.GET("/auth/user", handlers.GetCurrentUser)
-	r.GET("/auth/check", handlers.CheckAuth)
+	r.GET("/auth/:provider", middleware.BeginAuth)
+	r.GET("/auth/:provider/callback", middleware.AuthCallback)
+	r.POST("/auth/logout", middleware.Logout)
+	r.GET("/auth/user", middleware.GetCurrentUser)
+	r.GET("/auth/check", middleware.CheckAuth)
 
 	// WebSocket endpoint (protected by auth)
-	r.GET("/ws", handlers.AuthMiddleware(), handlers.HandleWSConnection)
+	r.GET("/ws", middleware.AuthMiddleware(), handlers.HandleWSConnection)
 
 	// Serve the chat page from static files
 	r.GET("/", func(c *gin.Context) {
