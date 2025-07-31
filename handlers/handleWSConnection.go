@@ -90,6 +90,7 @@ func (h *Hub) registerClient(client *models.Client) {
 	joinMessage := &models.Message{
 		ID:        generateMessageID(),
 		Sender:    "System",
+		Avatar:    "", // System messages don't need avatars
 		Room:      client.Room,
 		Text:      fmt.Sprintf("%s joined the room", client.Name),
 		Timestamp: time.Now(),
@@ -127,6 +128,7 @@ func (h *Hub) unregisterClient(client *models.Client) {
 			leaveMessage := &models.Message{
 				ID:        generateMessageID(),
 				Sender:    "System",
+				Avatar:    "", // System messages don't need avatars
 				Room:      client.Room,
 				Text:      fmt.Sprintf("%s left the room", client.Name),
 				Timestamp: time.Now(),
@@ -254,10 +256,11 @@ func HandleWSConnection(c *gin.Context) {
 
 	// Use authenticated user's name instead of the one from the request
 	client := &models.Client{
-		ID:   generateClientID(),
-		Name: userName,
-		Room: joinReq.RoomName,
-		Conn: conn,
+		ID:     generateClientID(),
+		Name:   userName,
+		Avatar: user.Avatar, // Include user avatar
+		Room:   joinReq.RoomName,
+		Conn:   conn,
 	}
 
 	// Register client
@@ -287,6 +290,7 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 		// Set message metadata
 		message.ID = generateMessageID()
 		message.Sender = client.Name
+		message.Avatar = client.Avatar // Include sender's avatar
 		message.Room = client.Room
 		message.Timestamp = time.Now()
 		message.Type = "message"

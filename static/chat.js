@@ -4,6 +4,9 @@ let currentRoom = '';
 let isConnected = false;
 let isAuthenticated = false;
 let currentUser = null;
+let isReconnecting = false;
+let connectionTimeout = null;
+let heartbeatInterval = null;
 
 const authSection = document.getElementById('authSection');
 const loginOptions = document.getElementById('loginOptions');
@@ -19,32 +22,58 @@ const messagesContainer = document.getElementById('messages');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const roomsList = document.getElementById('rooms');
-const debugInfo = document.getElementById('debugInfo');
 
-// Debug logging function
+// Debug logging function (console only)
 function debugLog(message) {
-    console.log(message);
-    const timestamp = new Date().toLocaleTimeString();
-    debugInfo.innerHTML += `<div>${timestamp}: ${message}</div>`;
-    debugInfo.scrollTop = debugInfo.scrollHeight;
+    console.log(`[${new Date().toLocaleTimeString()}] ${message}`);
+}
+
+// Check if all required elements exist
+function checkRequiredElements() {
+    const required = {
+        'authSection': authSection,
+        'loginOptions': loginOptions,
+        'userInfo': userInfo,
+        'joinForm': joinForm,
+        'roomnameInput': roomnameInput,
+        'joinBtn': joinBtn,
+        'loginScreen': loginScreen,
+        'chatInterface': chatInterface
+    };
+    
+    for (const [name, element] of Object.entries(required)) {
+        if (!element) {
+            console.error(`Required element missing: ${name}`);
+        } else {
+            console.log(`Element found: ${name}`);
+        }
+    }
 }
 
 // Authentication functions
 function loginWith(provider) {
+    console.log('LOGIN BUTTON CLICKED - Provider:', provider);
     debugLog(`Attempting to login with ${provider}`);
     window.location.href = `/auth/${provider}`;
 }
 
 function logout() {
     debugLog('Logging out...');
+    
+    // Stop heartbeat and close WebSocket connection before logout
+    stopHeartbeat();
+    if (ws) {
+        ws._intentionalClose = true;
+        ws.close(1000, 'User logout');
+    }
+    
     fetch('/auth/logout', { method: 'POST' })
         .then(() => {
             isAuthenticated = false;
             currentUser = null;
+            currentRoom = '';
+            isConnected = false;
             updateAuthUI();
-            if (ws) {
-                ws.close();
-            }
         })
         .catch(error => {
             debugLog(`Logout error: ${error}`);
@@ -133,26 +162,77 @@ function joinRoom() {
         return;
     }
 
+    debugLog(`Switching from room "${currentRoom}" to room "${room}"`);
+    
+    // Cancel any pending connection timeout
+    if (connectionTimeout) {
+        clearTimeout(connectionTimeout);
+        connectionTimeout = null;
+    }
+    
+    // Reset connection flags
+    isReconnecting = false;
+    
     currentRoom = room;
+    
+    // Reset connection status
+    isConnected = false;
+    updateConnectionStatus('Connecting...');
 
     debugLog(`Attempting to join room: ${room} as user: ${username}`);
     connectWebSocket();
 }
 
 function connectWebSocket() {
+    if (isReconnecting) {
+        debugLog('Connection already in progress, skipping...');
+        return;
+    }
+    
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${location.host}/ws`;
     debugLog(`Connecting to WebSocket: ${wsUrl}`);
 
-    // Close existing connection if any
-    if (ws) {
-        ws.close();
-    }
+    isReconnecting = true;
 
-    ws = new WebSocket(wsUrl);
+    // Close existing connection if any and wait for it to fully close
+    if (ws && ws.readyState !== WebSocket.CLOSED) {
+        debugLog('Closing existing WebSocket connection...');
+        // Set a flag to indicate this is an intentional close
+        ws._intentionalClose = true;
+        
+        // Clean close with proper reason
+        ws.close(1000, 'Switching rooms');
+        
+        // Wait longer for the connection to close properly before creating new one
+        connectionTimeout = setTimeout(() => {
+            if (isReconnecting) { // Only proceed if still in reconnecting state
+                createNewWebSocket(wsUrl);
+            }
+        }, 300);
+    } else {
+        createNewWebSocket(wsUrl);
+    }
+}
+
+function createNewWebSocket(wsUrl) {
+    debugLog('Creating new WebSocket connection...');
+    
+    // Clear any existing WebSocket reference
+    ws = null;
+    
+    try {
+        ws = new WebSocket(wsUrl);
+    } catch (error) {
+        debugLog(`Error creating WebSocket: ${error}`);
+        isReconnecting = false;
+        updateConnectionStatus('Connection failed');
+        return;
+    }
 
     ws.onopen = function() {
         debugLog('WebSocket connected successfully');
+        isReconnecting = false;
         
         // Send join request
         const joinRequest = {
@@ -164,10 +244,22 @@ function connectWebSocket() {
         try {
             ws.send(JSON.stringify(joinRequest));
             isConnected = true;
+            
+            // Start heartbeat
+            startHeartbeat();
+            
+            // Update UI and status after successful join
             updateUI();
-            loadRoomHistory(true); // Always clear when establishing new WebSocket connection
+            
+            // Load room history after a short delay to avoid disrupting the connection
+            setTimeout(() => {
+                if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
+                    loadRoomHistory(true);
+                }
+            }, 500);
         } catch (error) {
             debugLog(`Error sending join request: ${error}`);
+            isReconnecting = false;
         }
     };
 
@@ -185,17 +277,28 @@ function connectWebSocket() {
     ws.onclose = function(event) {
         debugLog(`WebSocket disconnected: Code ${event.code}, Reason: ${event.reason}`);
         isConnected = false;
-        updateConnectionStatus('Disconnected');
+        isReconnecting = false;
+        stopHeartbeat();
         
-        // Try to reconnect after 3 seconds if not intentionally closed
-        if (event.code !== 1000) {
+        // Don't show "Disconnected" for intentional closes (room switching)
+        const wasIntentional = this._intentionalClose || event.code === 1000;
+        
+        if (!wasIntentional) {
+            updateConnectionStatus('Disconnected');
+        }
+        
+        // Only try to reconnect if it was an unexpected disconnection and we're still in a room
+        if (!wasIntentional && currentRoom && isAuthenticated) {
+            debugLog('Unexpected disconnection, will attempt to reconnect...');
             setTimeout(() => {
-                if (!isConnected) {
+                if (!isConnected && !isReconnecting && currentRoom && isAuthenticated) {
                     debugLog('Attempting to reconnect...');
                     updateConnectionStatus('Reconnecting...');
                     connectWebSocket();
                 }
             }, 3000);
+        } else {
+            debugLog('Not reconnecting - intentional close or normal closure');
         }
     };
 
@@ -203,7 +306,42 @@ function connectWebSocket() {
         debugLog(`WebSocket error: ${error}`);
         updateConnectionStatus('Connection error');
         isConnected = false;
+        isReconnecting = false;
+        stopHeartbeat();
     };
+}
+
+function startHeartbeat() {
+    // Stop any existing heartbeat
+    stopHeartbeat();
+    
+    // Send a ping every 30 seconds to keep connection alive
+    heartbeatInterval = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            try {
+                // Send a simple ping message
+                ws.send(JSON.stringify({ type: 'ping' }));
+                debugLog('Heartbeat ping sent');
+            } catch (error) {
+                debugLog(`Heartbeat ping failed: ${error}`);
+                isConnected = false;
+                updateConnectionStatus('Connection lost');
+            }
+        } else {
+            debugLog('WebSocket not open during heartbeat check');
+            isConnected = false;
+            updateConnectionStatus('Connection lost');
+            stopHeartbeat();
+        }
+    }, 30000);
+}
+
+function stopHeartbeat() {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+        debugLog('Heartbeat stopped');
+    }
 }
 
 function sendMessage() {
@@ -212,17 +350,12 @@ function sendMessage() {
     debugLog(`isConnected: ${isConnected}`);
     debugLog(`WebSocket readyState: ${ws ? ws.readyState : 'null'}`);
     
-    if (!text) {
-        debugLog('No text to send');
+    if (!text || text.length === 0) {
+        debugLog('No text to send - empty or whitespace only');
         return;
     }
     
-    if (!isConnected) {
-        debugLog('Not connected to WebSocket');
-        alert('Not connected to chat server. Please refresh and try again.');
-        return;
-    }
-    
+    // Check WebSocket state
     if (!ws || ws.readyState !== WebSocket.OPEN) {
         debugLog(`WebSocket is not open. ReadyState: ${ws ? ws.readyState : 'null'}`);
         alert('Connection lost. Please refresh and try again.');
@@ -249,6 +382,12 @@ function displayMessage(message) {
     debugLog(`Displaying message: ${JSON.stringify(message)}`);
     debugLog(`Current username: "${username}", Message sender: "${message.sender}"`);
     
+    // Filter out empty or invalid messages
+    if (!message || !message.text || typeof message.text !== 'string' || message.text.trim() === '') {
+        debugLog('Skipping empty or invalid message');
+        return;
+    }
+    
     const messageEl = document.createElement('div');
     
     if (message.type === 'join' || message.type === 'leave') {
@@ -259,12 +398,41 @@ function displayMessage(message) {
         const isOwnMessage = message.sender === username;
         messageEl.className = `message ${isOwnMessage ? 'own' : 'other'}`;
         
-        const time = new Date(message.timestamp).toLocaleTimeString();
-        messageEl.innerHTML = `
-            <div class="message-info">${escapeHtml(message.sender)} - ${time}</div>
-            <div>${escapeHtml(message.text)}</div>
-        `;
-        debugLog(`Created ${isOwnMessage ? 'own' : 'other'} message element`);
+        // Use shorter time format (just hours:minutes)
+        const time = new Date(message.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        // Get avatar URL - use current user's avatar for own messages, or try to get from message data
+        let avatarUrl = '';
+        if (isOwnMessage && currentUser && currentUser.avatar) {
+            avatarUrl = currentUser.avatar;
+        } else if (message.avatar) {
+            avatarUrl = message.avatar;
+        }
+        
+        // Create avatar element
+        const avatarHtml = avatarUrl ? 
+            `<div class="message-avatar" style="background-image: url(${escapeHtml(avatarUrl)})"></div>` :
+            `<div class="message-avatar-placeholder">${escapeHtml(message.sender.charAt(0).toUpperCase())}</div>`;
+        
+        if (isOwnMessage) {
+            messageEl.innerHTML = `
+                <div class="message-content">
+                    <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
+                    <div>${escapeHtml(message.text)}</div>
+                </div>
+                ${avatarHtml}
+            `;
+        } else {
+            messageEl.innerHTML = `
+                ${avatarHtml}
+                <div class="message-content">
+                    <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
+                    <div>${escapeHtml(message.text)}</div>
+                </div>
+            `;
+        }
+        
+        debugLog(`Created ${isOwnMessage ? 'own' : 'other'} message element with avatar`);
     }
 
     debugLog(`Messages container exists: ${!!messagesContainer}`);
@@ -331,9 +499,12 @@ function loadRoomHistory(clearFirst = true) {
                 // Sort messages by timestamp
                 data.messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
                 
-                // Display historical messages
+                // Display historical messages - filter out empty ones
                 data.messages.forEach(message => {
-                    displayMessage(message);
+                    // Only display messages with valid text content
+                    if (message && message.text && typeof message.text === 'string' && message.text.trim() !== '') {
+                        displayMessage(message);
+                    }
                 });
             }
         })
@@ -399,6 +570,8 @@ debugLog('Chat application initialized');
 
 // Check authentication on page load
 window.addEventListener('load', () => {
+    console.log('=== PAGE LOADED - STARTING INITIALIZATION ===');
+    checkRequiredElements();
     debugLog('Page loaded, checking authentication...');
     checkAuth().then(authenticated => {
         if (authenticated) {

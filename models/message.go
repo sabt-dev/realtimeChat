@@ -8,6 +8,7 @@ import (
 type Message struct {
 	ID        string    `json:"id"`
 	Sender    string    `json:"sender"`
+	Avatar    string    `json:"avatar,omitempty"` // User avatar URL
 	Receiver  string    `json:"receiver,omitempty"`
 	Room      string    `json:"room"`
 	Text      string    `json:"text"`
@@ -17,10 +18,11 @@ type Message struct {
 
 // Client represents a connected WebSocket client
 type Client struct {
-	ID   string      `json:"id"`
-	Name string      `json:"name"`
-	Room string      `json:"room"`
-	Conn interface{} `json:"-"` // WebSocket connection (interface{} to avoid import cycle)
+	ID     string      `json:"id"`
+	Name   string      `json:"name"`
+	Avatar string      `json:"avatar,omitempty"` // User avatar URL
+	Room   string      `json:"room"`
+	Conn   interface{} `json:"-"` // WebSocket connection (interface{} to avoid import cycle)
 }
 
 // Room represents a chat room

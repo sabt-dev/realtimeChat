@@ -40,17 +40,20 @@ func InitAuth() {
 	store = sessions.NewCookieStore([]byte(sessionSecret))
 	gothic.Store = store
 
+	// Get base URL from environment or default to localhost
+	baseURL := getEnv("BASE_URL", "http://localhost:8080")
+
 	// Initialize providers
 	goth.UseProviders(
 		github.New(
 			getEnv("GITHUB_CLIENT_ID", "your-github-client-id"),
 			getEnv("GITHUB_CLIENT_SECRET", "your-github-client-secret"),
-			"http://localhost:8080/auth/github/callback",
+			baseURL+"/auth/github/callback",
 		),
 		google.New(
 			getEnv("GOOGLE_CLIENT_ID", "your-google-client-id"),
 			getEnv("GOOGLE_CLIENT_SECRET", "your-google-client-secret"),
-			"http://localhost:8080/auth/google/callback",
+			baseURL+"/auth/google/callback",
 		),
 	)
 }
