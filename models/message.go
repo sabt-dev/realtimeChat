@@ -13,7 +13,10 @@ type Message struct {
 	Room      string    `json:"room"`
 	Text      string    `json:"text"`
 	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"` // "join", "leave", "message"
+	Type      string    `json:"type"` // "join", "leave", "message", "media"
+	MediaURL  string    `json:"mediaUrl,omitempty"`
+	MediaType string    `json:"mediaType,omitempty"` // "image", "video"
+	FileName  string    `json:"fileName,omitempty"`
 }
 
 // Client represents a connected WebSocket client

@@ -39,3 +39,79 @@ func PersistMessage(msg *models.Message) error {
 	log.Printf("Message persisted to file: %s", filename)
 	return nil
 }
+
+// LoadMessageFromFile loads a specific message by ID from the file system
+func LoadMessageFromFile(room, messageID string) (*models.Message, error) {
+	folderName := filepath.Join("persistence", room)
+
+	// Read all files in the room folder
+	files, err := os.ReadDir(folderName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Look for the file containing this message ID
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		// Check if filename contains the message ID
+		if filepath.Ext(file.Name()) == ".json" &&
+			len(file.Name()) > len("message_"+messageID) &&
+			file.Name()[8:8+len(messageID)] == messageID {
+
+			// Read and parse the file
+			filePath := filepath.Join(folderName, file.Name())
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				continue
+			}
+
+			var message models.Message
+			if err := json.Unmarshal(data, &message); err != nil {
+				continue
+			}
+
+			return &message, nil
+		}
+	}
+
+	return nil, os.ErrNotExist
+}
+
+// DeleteMessageFromFile deletes a specific message by ID from the file system
+func DeleteMessageFromFile(room, messageID string) error {
+	folderName := filepath.Join("persistence", room)
+
+	// Read all files in the room folder
+	files, err := os.ReadDir(folderName)
+	if err != nil {
+		return err
+	}
+
+	// Look for the file containing this message ID
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		// Check if filename contains the message ID
+		if filepath.Ext(file.Name()) == ".json" &&
+			len(file.Name()) > len("message_"+messageID) &&
+			file.Name()[8:8+len(messageID)] == messageID {
+
+			// Delete the file
+			filePath := filepath.Join(folderName, file.Name())
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("Error deleting message file %s: %v", filePath, err)
+				return err
+			}
+
+			log.Printf("Message file deleted: %s", filePath)
+			return nil
+		}
+	}
+
+	return os.ErrNotExist
+}

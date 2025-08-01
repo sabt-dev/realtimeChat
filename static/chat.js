@@ -7,6 +7,10 @@ let currentUser = null;
 let isReconnecting = false;
 let connectionTimeout = null;
 let heartbeatInterval = null;
+let selectedFile = null;
+let isUploading = false;
+let isUserScrolledUp = false;
+let pendingMessages = 0;
 
 const authSection = document.getElementById('authSection');
 const loginOptions = document.getElementById('loginOptions');
@@ -67,6 +71,9 @@ function logout() {
         ws.close(1000, 'User logout');
     }
     
+    // Clear saved room on logout
+    localStorage.removeItem('currentRoom');
+    
     fetch('/auth/logout', { method: 'POST' })
         .then(() => {
             isAuthenticated = false;
@@ -100,6 +107,24 @@ function checkAuth() {
             updateAuthUI();
             return false;
         });
+}
+
+function restoreSavedRoom() {
+    if (!isAuthenticated) {
+        debugLog('Not authenticated, cannot restore saved room');
+        return;
+    }
+    
+    const savedRoom = localStorage.getItem('currentRoom');
+    if (savedRoom && savedRoom.trim()) {
+        debugLog(`Found saved room: ${savedRoom}, attempting to rejoin...`);
+        // Small delay to ensure UI is ready
+        setTimeout(() => {
+            joinRoomByName(savedRoom);
+        }, 500);
+    } else {
+        debugLog('No saved room found');
+    }
 }
 
 function updateAuthUI() {
@@ -140,6 +165,14 @@ messageInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') sendMessage();
 });
 
+// Add paste event listener for image pasting
+messageInput.addEventListener('paste', handlePaste);
+
+// Add scroll event listener to detect manual scrolling
+if (messagesContainer) {
+    messagesContainer.addEventListener('scroll', handleScroll);
+}
+
 function joinRoom() {
     if (!isAuthenticated) {
         alert('Please login first');
@@ -153,16 +186,36 @@ function joinRoom() {
         return;
     }
 
+    joinRoomByName(room);
+}
+
+function joinRoomByName(roomName) {
+    if (!isAuthenticated) {
+        alert('Please login first');
+        return;
+    }
+
+    if (!roomName) {
+        alert('Invalid room name');
+        return;
+    }
+
     // Check if already in the same room
-    if (currentRoom === room && isConnected && ws && ws.readyState === WebSocket.OPEN) {
-        debugLog(`Already in room: ${room}, refreshing messages`);
+    if (currentRoom === roomName && isConnected && ws && ws.readyState === WebSocket.OPEN) {
+        debugLog(`Already in room: ${roomName}, refreshing messages`);
         // Clear and reload messages for a fresh view
         clearMessages();
         loadRoomHistory(false); // Don't clear again since we just did
         return;
     }
 
-    debugLog(`Switching from room "${currentRoom}" to room "${room}"`);
+    debugLog(`Switching from room "${currentRoom}" to room "${roomName}"`);
+    
+    // Update the room input field
+    roomnameInput.value = roomName;
+    
+    // Save current room to localStorage
+    localStorage.setItem('currentRoom', roomName);
     
     // Cancel any pending connection timeout
     if (connectionTimeout) {
@@ -173,13 +226,13 @@ function joinRoom() {
     // Reset connection flags
     isReconnecting = false;
     
-    currentRoom = room;
+    currentRoom = roomName;
     
     // Reset connection status
     isConnected = false;
     updateConnectionStatus('Connecting...');
 
-    debugLog(`Attempting to join room: ${room} as user: ${username}`);
+    debugLog(`Attempting to join room: ${roomName} as user: ${username}`);
     connectWebSocket();
 }
 
@@ -255,6 +308,8 @@ function createNewWebSocket(wsUrl) {
             setTimeout(() => {
                 if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
                     loadRoomHistory(true);
+                    // Additional scroll to bottom after history loads
+                    setTimeout(() => scrollToBottom(), 1000);
                 }
             }, 500);
         } catch (error) {
@@ -268,7 +323,13 @@ function createNewWebSocket(wsUrl) {
         try {
             const message = JSON.parse(event.data);
             debugLog(`Parsed message: ${JSON.stringify(message)}`);
-            displayMessage(message);
+            
+            // Handle delete messages
+            if (message.type === 'delete') {
+                handleMessageDeletion(message.id);
+            } else {
+                displayMessage(message);
+            }
         } catch (error) {
             debugLog(`Error parsing message: ${error}`);
         }
@@ -345,6 +406,12 @@ function stopHeartbeat() {
 }
 
 function sendMessage() {
+    // Check if we have a selected file to upload
+    if (selectedFile) {
+        sendMediaMessage();
+        return;
+    }
+
     const text = messageInput.value.trim();
     debugLog(`sendMessage called with text: "${text}"`);
     debugLog(`isConnected: ${isConnected}`);
@@ -362,6 +429,14 @@ function sendMessage() {
         return;
     }
 
+    // Check if the text contains a media URL
+    const mediaUrl = detectMediaUrl(text);
+    if (mediaUrl) {
+        debugLog(`Detected media URL: ${mediaUrl}`);
+        sendUrlMediaMessage(mediaUrl, text);
+        return;
+    }
+
     const message = {
         text: text,
         type: 'message'
@@ -371,19 +446,24 @@ function sendMessage() {
     try {
         ws.send(JSON.stringify(message));
         messageInput.value = '';
-        debugLog('Message sent successfully');
+        
+        // Force scroll to bottom when user sends a message
+        isUserScrolledUp = false; // Reset scroll state
+        setTimeout(() => scrollToBottom(), 100); // Small delay to ensure message is rendered
+        
+        debugLog('Message sent successfully and scrolled to bottom');
     } catch (error) {
         debugLog(`Error sending message: ${error}`);
         alert('Failed to send message. Please try again.');
     }
 }
 
-function displayMessage(message) {
-    debugLog(`Displaying message: ${JSON.stringify(message)}`);
+function displayMessage(message, isFromHistory = false) {
+    debugLog(`Displaying message: ${JSON.stringify(message)}, isFromHistory: ${isFromHistory}`);
     debugLog(`Current username: "${username}", Message sender: "${message.sender}"`);
     
-    // Filter out empty or invalid messages
-    if (!message || !message.text || typeof message.text !== 'string' || message.text.trim() === '') {
+    // Filter out empty or invalid messages (but allow media messages)
+    if (!message || (message.type !== 'media' && (!message.text || typeof message.text !== 'string' || message.text.trim() === ''))) {
         debugLog('Skipping empty or invalid message');
         return;
     }
@@ -391,12 +471,13 @@ function displayMessage(message) {
     const messageEl = document.createElement('div');
     
     if (message.type === 'join' || message.type === 'leave') {
-        messageEl.className = 'message system';
-        messageEl.innerHTML = `<div>${escapeHtml(message.text)}</div>`;
+        messageEl.className = `message system${isFromHistory ? ' no-animation' : ''}`;
+        messageEl.innerHTML = `<div>${processLinksInText(escapeHtml(message.text))}</div>`;
         debugLog('Created system message element');
-    } else {
+    } else if (message.type === 'media') {
         const isOwnMessage = message.sender === username;
-        messageEl.className = `message ${isOwnMessage ? 'own' : 'other'}`;
+        messageEl.className = `message ${isOwnMessage ? 'own' : 'other'}${isFromHistory ? ' no-animation' : ''}`;
+        messageEl.setAttribute('data-message-id', message.id); // Add message ID as data attribute
         
         // Use shorter time format (just hours:minutes)
         const time = new Date(message.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
@@ -414,20 +495,96 @@ function displayMessage(message) {
             `<div class="message-avatar" style="background-image: url(${escapeHtml(avatarUrl)})"></div>` :
             `<div class="message-avatar-placeholder">${escapeHtml(message.sender.charAt(0).toUpperCase())}</div>`;
         
+        // Create media content
+        let mediaHtml = '';
+        if (message.mediaType === 'image') {
+            mediaHtml = `
+                <div class="message-media">
+                    <img src="${escapeHtml(message.mediaUrl)}" alt="Shared image" onclick="openImageModal('${escapeHtml(message.mediaUrl)}')">
+                    ${message.fileName ? `<div class="media-filename">${escapeHtml(message.fileName)}</div>` : ''}
+                </div>
+            `;
+        } else if (message.mediaType === 'video') {
+            mediaHtml = `
+                <div class="message-media">
+                    <video src="${escapeHtml(message.mediaUrl)}" controls>
+                        Your browser does not support the video tag.
+                    </video>
+                    ${message.fileName ? `<div class="media-filename">${escapeHtml(message.fileName)}</div>` : ''}
+                </div>
+            `;
+        }
+        
+        // Create text content if present
+        const textHtml = message.text && message.text.trim() ? 
+            `<div class="message-text">${processLinksInText(escapeHtml(message.text))}</div>` : '';
+        
+        // Create delete button for own messages
+        const deleteButtonHtml = isOwnMessage ? 
+            `<button class="message-delete-btn" onclick="deleteMessage('${escapeHtml(message.id)}')" title="Delete message">×</button>` : '';
+        
         if (isOwnMessage) {
             messageEl.innerHTML = `
+                ${avatarHtml}
                 <div class="message-content">
                     <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
-                    <div>${escapeHtml(message.text)}</div>
+                    ${textHtml}
+                    ${mediaHtml}
                 </div>
-                ${avatarHtml}
+                ${deleteButtonHtml}
             `;
         } else {
             messageEl.innerHTML = `
                 ${avatarHtml}
                 <div class="message-content">
                     <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
-                    <div>${escapeHtml(message.text)}</div>
+                    ${textHtml}
+                    ${mediaHtml}
+                </div>
+            `;
+        }
+        
+        debugLog(`Created ${isOwnMessage ? 'own' : 'other'} media message element`);
+    } else {
+        const isOwnMessage = message.sender === username;
+        messageEl.className = `message ${isOwnMessage ? 'own' : 'other'}${isFromHistory ? ' no-animation' : ''}`;
+        messageEl.setAttribute('data-message-id', message.id); // Add message ID as data attribute
+        
+        // Use shorter time format (just hours:minutes)
+        const time = new Date(message.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        // Get avatar URL - use current user's avatar for own messages, or try to get from message data
+        let avatarUrl = '';
+        if (isOwnMessage && currentUser && currentUser.avatar) {
+            avatarUrl = currentUser.avatar;
+        } else if (message.avatar) {
+            avatarUrl = message.avatar;
+        }
+        
+        // Create avatar element
+        const avatarHtml = avatarUrl ? 
+            `<div class="message-avatar" style="background-image: url(${escapeHtml(avatarUrl)})"></div>` :
+            `<div class="message-avatar-placeholder">${escapeHtml(message.sender.charAt(0).toUpperCase())}</div>`;
+        
+        // Create delete button for own messages
+        const deleteButtonHtml = isOwnMessage ? 
+            `<button class="message-delete-btn" onclick="deleteMessage('${escapeHtml(message.id)}')" title="Delete message">×</button>` : '';
+        
+        if (isOwnMessage) {
+            messageEl.innerHTML = `
+                ${avatarHtml}
+                <div class="message-content">
+                    <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
+                    <div>${processLinksInText(escapeHtml(message.text))}</div>
+                </div>
+                ${deleteButtonHtml}
+            `;
+        } else {
+            messageEl.innerHTML = `
+                ${avatarHtml}
+                <div class="message-content">
+                    <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
+                    <div>${processLinksInText(escapeHtml(message.text))}</div>
                 </div>
             `;
         }
@@ -438,7 +595,61 @@ function displayMessage(message) {
     debugLog(`Messages container exists: ${!!messagesContainer}`);
     debugLog(`Appending message element to container`);
     messagesContainer.appendChild(messageEl);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    // Determine if this is the user's own message
+    const isOwnMessage = message.sender === username;
+    
+    // Check if we should auto-scroll or show notification
+    // Always scroll for own messages, and scroll for any message (including join/leave) when user is at bottom
+    if (isOwnMessage || !isUserScrolledUp) {
+        // Auto-scroll for own messages or when user is at bottom (for all message types)
+        if (isOwnMessage) {
+            isUserScrolledUp = false; // Reset scroll state for own messages
+        }
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        debugLog(`Auto-scrolled to bottom (own message: ${isOwnMessage}, at bottom: ${!isUserScrolledUp})`);
+        
+        // Also scroll after any images finish loading to handle media messages
+        const images = messageEl.querySelectorAll('img');
+        if (images.length > 0) {
+            let loadedImages = 0;
+            images.forEach(img => {
+                if (img.complete) {
+                    loadedImages++;
+                } else {
+                    img.onload = () => {
+                        loadedImages++;
+                        if (loadedImages === images.length && !isUserScrolledUp) {
+                            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            debugLog('Scrolled to bottom after images loaded');
+                        }
+                    };
+                    img.onerror = () => {
+                        loadedImages++;
+                        if (loadedImages === images.length && !isUserScrolledUp) {
+                            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            debugLog('Scrolled to bottom after image error');
+                        }
+                    };
+                }
+            });
+            // If all images were already loaded, scroll again (only if user is at bottom)
+            if (loadedImages === images.length && !isUserScrolledUp) {
+                setTimeout(() => {
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }, 10);
+            }
+        }
+    } else {
+        // User is scrolled up and this is another user's message - show notification for regular messages only
+        if (message.type !== 'join' && message.type !== 'leave') {
+            pendingMessages++;
+            showNewMessageNotification();
+            debugLog(`User scrolled up - added to pending messages (${pendingMessages})`);
+        } else {
+            debugLog(`System message (${message.type}) displayed quietly while user scrolled up`);
+        }
+    }
     
     debugLog(`Total messages in container now: ${messagesContainer.children.length}`);
     debugLog(`Message successfully displayed in UI`);
@@ -447,7 +658,89 @@ function displayMessage(message) {
 function clearMessages() {
     debugLog('Clearing all messages from UI');
     messagesContainer.innerHTML = '';
+    
+    // Reset scroll state when clearing messages
+    isUserScrolledUp = false;
+    pendingMessages = 0;
+    hideNewMessageNotification();
+    
     debugLog('Messages cleared successfully');
+}
+
+function scrollToBottom() {
+    if (messagesContainer) {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        debugLog(`Scrolled to bottom. ScrollTop: ${messagesContainer.scrollTop}, ScrollHeight: ${messagesContainer.scrollHeight}`);
+        
+        // Reset scroll state and hide new message notification
+        isUserScrolledUp = false;
+        pendingMessages = 0;
+        hideNewMessageNotification();
+    }
+}
+
+function handleScroll() {
+    if (!messagesContainer) return;
+    
+    const scrollTop = messagesContainer.scrollTop;
+    const scrollHeight = messagesContainer.scrollHeight;
+    const clientHeight = messagesContainer.clientHeight;
+    
+    // Check if user is near the bottom (within 50px)
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 50;
+    
+    // Update scroll state
+    const wasScrolledUp = isUserScrolledUp;
+    isUserScrolledUp = !isNearBottom;
+    
+    // If user scrolled to bottom, clear pending messages and hide notification
+    if (!isUserScrolledUp && wasScrolledUp) {
+        pendingMessages = 0;
+        hideNewMessageNotification();
+        debugLog('User scrolled to bottom - cleared pending messages');
+    }
+    
+    debugLog(`Scroll state: isUserScrolledUp=${isUserScrolledUp}, scrollTop=${scrollTop}, scrollHeight=${scrollHeight}, clientHeight=${clientHeight}`);
+}
+
+function showNewMessageNotification() {
+    let notification = document.getElementById('newMessageNotification');
+    
+    // Create notification if it doesn't exist
+    if (!notification) {
+        notification = document.createElement('div');
+        notification.id = 'newMessageNotification';
+        notification.className = 'new-message-notification';
+        notification.innerHTML = `
+            <span id="pendingCount">1</span> new message(s)
+            <button onclick="scrollToBottomAndClear()">↓</button>
+        `;
+        
+        // Insert before messages container
+        messagesContainer.parentNode.insertBefore(notification, messagesContainer);
+    }
+    
+    // Update count and show
+    const countElement = document.getElementById('pendingCount');
+    if (countElement) {
+        countElement.textContent = pendingMessages;
+    }
+    
+    notification.classList.add('show');
+    debugLog(`Showing new message notification with ${pendingMessages} pending messages`);
+}
+
+function hideNewMessageNotification() {
+    const notification = document.getElementById('newMessageNotification');
+    if (notification) {
+        notification.classList.remove('show');
+        debugLog('Hidden new message notification');
+    }
+}
+
+function scrollToBottomAndClear() {
+    scrollToBottom();
+    hideNewMessageNotification();
 }
 
 function updateUI() {
@@ -459,14 +752,19 @@ function updateUI() {
 }
 
 function updateConnectionStatus(status) {
-    connectionStatus.textContent = status;
+    // Clear any existing text content
+    connectionStatus.textContent = '';
+    
+    // Remove all status classes first
+    connectionStatus.classList.remove('connecting', 'disconnected');
     
     if (status === 'Connected') {
-        connectionStatus.style.color = '#27ae60';
-    } else if (status === 'Disconnected' || status === 'Connection error') {
-        connectionStatus.style.color = '#e74c3c';
+        // Default state - no additional class needed (green)
+    } else if (status === 'Disconnected' || status === 'Connection error' || status === 'Connection lost' || status === 'Connection failed') {
+        connectionStatus.classList.add('disconnected');
     } else {
-        connectionStatus.style.color = '#f39c12';
+        // For 'Connecting...', 'Reconnecting...', etc.
+        connectionStatus.classList.add('connecting');
     }
 }
 
@@ -499,13 +797,22 @@ function loadRoomHistory(clearFirst = true) {
                 // Sort messages by timestamp
                 data.messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
                 
-                // Display historical messages - filter out empty ones
+                // Display historical messages - include both text and media messages
                 data.messages.forEach(message => {
-                    // Only display messages with valid text content
-                    if (message && message.text && typeof message.text === 'string' && message.text.trim() !== '') {
-                        displayMessage(message);
+                    // Display message if it has valid content (text for regular messages, mediaUrl for media messages)
+                    if (message && 
+                        ((message.type === 'media' && message.mediaUrl) || 
+                         (message.type !== 'media' && message.text && typeof message.text === 'string' && message.text.trim() !== '') ||
+                         (message.type === 'join' || message.type === 'leave'))) {
+                        displayMessage(message, true); // Pass true for isFromHistory
                     }
                 });
+                
+                // Ensure scroll to bottom after all messages are loaded
+                // Use multiple timeouts to handle different loading scenarios
+                setTimeout(() => scrollToBottom(), 50);
+                setTimeout(() => scrollToBottom(), 200);
+                setTimeout(() => scrollToBottom(), 500);
             }
         })
         .catch(error => {
@@ -541,6 +848,13 @@ function loadActiveRooms() {
                     if (room.name === currentRoom) {
                         roomEl.classList.add('active');
                     }
+                    
+                    // Add click event to join room
+                    roomEl.addEventListener('click', () => {
+                        debugLog(`Clicked on room: ${room.name}`);
+                        joinRoomByName(room.name);
+                    });
+                    
                     roomEl.innerHTML = `
                         <div><strong>${escapeHtml(room.name)}</strong></div>
                         <div style="font-size: 12px; opacity: 0.8;">${room.count} users online</div>
@@ -562,8 +876,650 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Load active rooms every 10 seconds
-setInterval(loadActiveRooms, 10000);
+// URL media detection and handling
+function detectMediaUrl(text) {
+    // URL regex pattern to match HTTP/HTTPS URLs
+    const urlRegex = /(https?:\/\/[^\s]+)/gi;
+    const urls = text.match(urlRegex);
+    
+    if (!urls) return null;
+    
+    // Check each URL to see if it's a media file
+    for (const url of urls) {
+        if (isMediaUrl(url)) {
+            return url;
+        }
+    }
+    
+    return null;
+}
+
+function isMediaUrl(url) {
+    // Remove query parameters for extension checking
+    const urlWithoutParams = url.split('?')[0];
+    
+    // Common image extensions
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+    // Common video extensions  
+    const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv'];
+    
+    // Check if URL ends with media extension
+    const hasMediaExtension = [...imageExtensions, ...videoExtensions].some(ext => 
+        urlWithoutParams.toLowerCase().endsWith(ext)
+    );
+    
+    // Also check for common media hosting patterns
+    const mediaHostPatterns = [
+        /cdn\.discordapp\.com\/attachments.*\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)/i,
+        /imgur\.com.*\.(jpg|jpeg|png|gif|webp|mp4|webm)/i,
+        /i\.imgur\.com/i,
+        /media\.giphy\.com/i,
+        /tenor\.com.*\.gif/i,
+        /youtube\.com.*\.(mp4|webm)/i,
+        /vimeo\.com.*\.(mp4|webm)/i
+    ];
+    
+    const matchesHostPattern = mediaHostPatterns.some(pattern => pattern.test(url));
+    
+    return hasMediaExtension || matchesHostPattern;
+}
+
+function getMediaTypeFromUrl(url) {
+    const urlWithoutParams = url.split('?')[0].toLowerCase();
+    
+    // Video extensions
+    const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv'];
+    if (videoExtensions.some(ext => urlWithoutParams.endsWith(ext))) {
+        return 'video';
+    }
+    
+    // Default to image for everything else
+    return 'image';
+}
+
+function extractFilenameFromUrl(url) {
+    try {
+        const urlObj = new URL(url);
+        const pathname = urlObj.pathname;
+        const filename = pathname.split('/').pop();
+        return filename || 'media_file';
+    } catch (e) {
+        return 'media_file';
+    }
+}
+
+// Function to convert URLs in text to clickable links
+function processLinksInText(text) {
+    if (!text) return text;
+    
+    // URL regex pattern to match HTTP/HTTPS URLs
+    const urlRegex = /(https?:\/\/[^\s<>\"]+)/gi;
+    
+    return text.replace(urlRegex, (url) => {
+        // Clean up the URL (remove trailing punctuation that shouldn't be part of the link)
+        const cleanUrl = url.replace(/[.,;:!?]+$/, '');
+        const trailingPunctuation = url.substring(cleanUrl.length);
+        
+        // Create a safe display text (truncate very long URLs)
+        let displayText = cleanUrl;
+        if (displayText.length > 50) {
+            displayText = displayText.substring(0, 47) + '...';
+        }
+        
+        // Create the link with proper attributes
+        return `<a href="${escapeHtml(cleanUrl)}" target="_blank" rel="noopener noreferrer" class="message-link">${escapeHtml(displayText)}</a>${trailingPunctuation}`;
+    });
+}
+
+function sendUrlMediaMessage(mediaUrl, originalText) {
+    debugLog(`Sending URL-based media message: ${mediaUrl}`);
+    
+    // Extract any text that isn't the URL (for caption)
+    const urlRegex = /(https?:\/\/[^\s]+)/gi;
+    const captionText = originalText.replace(urlRegex, '').trim();
+    
+    const mediaType = getMediaTypeFromUrl(mediaUrl);
+    const fileName = extractFilenameFromUrl(mediaUrl);
+    
+    // Send media message via WebSocket
+    const mediaMessage = {
+        type: 'media',
+        mediaUrl: mediaUrl,
+        mediaType: mediaType,
+        fileName: fileName,
+        text: captionText // Include any additional text as caption
+    };
+
+    debugLog(`Sending URL media message: ${JSON.stringify(mediaMessage)}`);
+    try {
+        ws.send(JSON.stringify(mediaMessage));
+        messageInput.value = '';
+        
+        // Force scroll to bottom when user sends a URL media message
+        isUserScrolledUp = false; // Reset scroll state
+        setTimeout(() => scrollToBottom(), 100); // Small delay to ensure message is rendered
+        
+        debugLog('URL media message sent successfully and scrolled to bottom');
+    } catch (error) {
+        debugLog(`Error sending URL media message: ${error}`);
+        alert('Failed to send media message. Please try again.');
+    }
+}
+
+// File upload handling
+function handlePaste(event) {
+    debugLog('Paste event detected');
+    
+    // Get clipboard data
+    const clipboardData = event.clipboardData || window.clipboardData;
+    if (!clipboardData) {
+        debugLog('No clipboard data available');
+        return;
+    }
+
+    // Check for files in clipboard
+    const items = clipboardData.items;
+    if (!items) {
+        debugLog('No clipboard items available');
+        return;
+    }
+
+    // Look for image files in clipboard
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        debugLog(`Clipboard item ${i}: kind=${item.kind}, type=${item.type}`);
+        
+        // Check if it's a file and an image
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+            event.preventDefault(); // Prevent default paste behavior
+            
+            const file = item.getAsFile();
+            if (file) {
+                debugLog(`Pasted image file: ${file.name}, size: ${file.size}, type: ${file.type}`);
+
+                // Validate file size (10MB for dev tunnel compatibility)
+                const maxSize = 10 * 1024 * 1024; // 10MB
+                if (file.size > maxSize) {
+                    alert('Image too large. Maximum size is 10MB.');
+                    return;
+                }
+
+                // Set as selected file and show preview
+                selectedFile = file;
+                showMediaPreview(file);
+                
+                debugLog('Image from paste set as selected file');
+                return; // Exit after processing the first image
+            }
+        }
+    }
+    
+    debugLog('No image found in paste data');
+}
+
+function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    debugLog(`File selected: name=${file.name}, size=${file.size}, type=${file.type}`);
+
+    // Validate file type
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/webm', 'video/mov', 'video/avi'];
+    if (!allowedTypes.includes(file.type)) {
+        alert('File type not supported. Please upload an image (JPEG, PNG, GIF, WebP) or video (MP4, WebM, MOV, AVI).');
+        debugLog(`File type not allowed: ${file.type}`);
+        return;
+    }
+
+    // Validate file size (10MB for dev tunnel compatibility)
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSize) {
+        alert('File too large. Maximum size is 10MB.');
+        debugLog(`File too large: ${file.size} bytes (max: ${maxSize} bytes)`);
+        return;
+    }
+
+    debugLog(`File validation passed, setting as selected file`);
+    selectedFile = file;
+    showMediaPreview(file);
+}
+
+function clearExistingPreviews() {
+    const imagePreview = document.getElementById('mediaPreview');
+    const videoPreview = document.getElementById('videoPreview');
+    
+    debugLog('Clearing existing previews only...');
+    
+    // Clear image preview
+    imagePreview.classList.remove('show');
+    imagePreview.style.display = 'none';
+    
+    // Clear video preview
+    videoPreview.classList.remove('show');
+    videoPreview.style.display = 'none';
+    if (videoPreview.src && videoPreview.src.startsWith('blob:')) {
+        videoPreview.pause();
+        videoPreview.currentTime = 0;
+    }
+    
+    // Revoke previous object URLs to prevent memory leaks
+    if (imagePreview.src && imagePreview.src.startsWith('blob:')) {
+        URL.revokeObjectURL(imagePreview.src);
+        imagePreview.src = '';
+    }
+    if (videoPreview.src && videoPreview.src.startsWith('blob:')) {
+        URL.revokeObjectURL(videoPreview.src);
+        videoPreview.src = '';
+    }
+    
+    // Remove event listeners
+    imagePreview.onmousedown = null;
+    imagePreview.ondblclick = null;
+    imagePreview.onclick = null;
+    videoPreview.onmousedown = null;
+    videoPreview.ondblclick = null;
+    
+    // Remove delete buttons
+    removeExistingDeleteButton();
+    
+    debugLog('Existing previews cleared');
+}
+
+function showMediaPreview(file) {
+    debugLog(`showMediaPreview called with file: name=${file.name}, type=${file.type}, size=${file.size}`);
+    
+    // Clear any existing preview without resetting selectedFile
+    clearExistingPreviews();
+    
+    const imagePreview = document.getElementById('mediaPreview');
+    const videoPreview = document.getElementById('videoPreview');
+    
+    debugLog(`Elements found: imagePreview=${!!imagePreview}, videoPreview=${!!videoPreview}`);
+    
+    // Remove any existing click handlers and delete buttons
+    imagePreview.onclick = null;
+    videoPreview.onclick = null;
+    removeExistingDeleteButton();
+    
+    const url = URL.createObjectURL(file);
+    debugLog(`Created object URL: ${url}`);
+    
+    if (file.type.startsWith('image/')) {
+        imagePreview.src = url;
+        debugLog(`Image src set, adding show class...`);
+        
+        // Force visibility with multiple approaches (same as video)
+        imagePreview.style.display = 'block';
+        imagePreview.classList.add('show');
+        
+        debugLog(`Show class added, imagePreview.style.display: ${imagePreview.style.display}`);
+        debugLog(`Has show class: ${imagePreview.classList.contains('show')}`);
+        
+        // Add click handler to delete preview when clicked
+        // Use mousedown to capture clicks properly (same as video)
+        imagePreview.addEventListener('mousedown', (e) => {
+            // Only handle left clicks
+            if (e.button === 0) {
+                e.preventDefault();
+                e.stopPropagation();
+                clearMediaPreview();
+                debugLog('Image preview deleted by clicking on preview');
+            }
+        });
+        
+        // Also add a double-click handler as backup
+        imagePreview.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            clearMediaPreview();
+            debugLog('Image preview deleted by double-clicking on preview');
+        });
+        
+        // Change cursor to indicate it's clickable for deletion
+        imagePreview.style.cursor = 'pointer';
+        imagePreview.title = 'Click to remove attachment';
+        
+        // Add visual feedback to input
+        messageInput.classList.add('has-media');
+        messageInput.focus();
+        messageInput.placeholder = '📎 Image ready! Click image to remove, or add caption and press Enter to share.';
+        
+        debugLog('Image preview shown');
+    } else if (file.type.startsWith('video/')) {
+        debugLog(`Setting up video preview with URL: ${url}`);
+        videoPreview.src = url;
+        debugLog(`Video src set, adding show class...`);
+        
+        // Force visibility with multiple approaches
+        videoPreview.style.display = 'block';
+        videoPreview.classList.add('show');
+        
+        debugLog(`Show class added, videoPreview.style.display: ${videoPreview.style.display}`);
+        debugLog(`Has show class: ${videoPreview.classList.contains('show')}`);
+        
+        // Add click handler to delete preview when clicked
+        // Use mousedown to capture before video controls
+        videoPreview.addEventListener('mousedown', (e) => {
+            // Only handle left clicks
+            if (e.button === 0) {
+                e.preventDefault();
+                e.stopPropagation();
+                clearMediaPreview();
+                debugLog('Video preview deleted by clicking on preview');
+            }
+        });
+        
+        // Also add a double-click handler as backup
+        videoPreview.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            clearMediaPreview();
+            debugLog('Video preview deleted by double-clicking on preview');
+        });
+        
+        // Change cursor to indicate it's clickable for deletion
+        videoPreview.style.cursor = 'pointer';
+        videoPreview.title = 'Click to remove attachment';
+        
+        // Add visual feedback to input
+        messageInput.classList.add('has-media');
+        messageInput.focus();
+        messageInput.placeholder = '📎 Video ready! Click video to remove, or add caption and press Enter to share.';
+        
+        debugLog('Video preview shown');
+    } else {
+        debugLog(`Unknown file type: ${file.type}`);
+    }
+}
+
+function addDeleteButton(previewElement) {
+    // Ensure the preview element has relative positioning
+    previewElement.style.position = 'relative';
+    
+    const deleteBtn = document.createElement('button');
+    deleteBtn.innerHTML = '×';
+    deleteBtn.className = 'media-delete-button';
+    deleteBtn.title = 'Remove media attachment';
+    deleteBtn.setAttribute('aria-label', 'Remove media attachment');
+    
+    // Ensure the button is positioned properly with inline styles
+    deleteBtn.style.position = 'absolute';
+    deleteBtn.style.top = '-12px';
+    deleteBtn.style.right = '-12px';
+    deleteBtn.style.backgroundColor = '#e74c3c';
+    deleteBtn.style.color = 'white';
+    deleteBtn.style.border = '2px solid white';
+    deleteBtn.style.borderRadius = '50%';
+    deleteBtn.style.width = '24px';
+    deleteBtn.style.height = '24px';
+    deleteBtn.style.display = 'flex';
+    deleteBtn.style.alignItems = 'center';
+    deleteBtn.style.justifyContent = 'center';
+    deleteBtn.style.fontSize = '16px';
+    deleteBtn.style.fontWeight = 'bold';
+    deleteBtn.style.cursor = 'pointer';
+    deleteBtn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.3)';
+    deleteBtn.style.zIndex = '1000';
+    
+    deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        clearMediaPreview();
+        debugLog('Media attachment removed by delete button');
+    };
+    
+    // Append button directly to the preview element for proper positioning
+    previewElement.appendChild(deleteBtn);
+    
+    debugLog('Delete button added to media preview with improved styling');
+}
+
+function removeExistingDeleteButton() {
+    // Remove all media delete buttons to ensure clean state
+    const allDeleteButtons = document.querySelectorAll('.media-delete-button');
+    
+    allDeleteButtons.forEach(btn => {
+        btn.remove();
+        debugLog('Removed media delete button');
+    });
+}
+
+function clearMediaPreview() {
+    const imagePreview = document.getElementById('mediaPreview');
+    const videoPreview = document.getElementById('videoPreview');
+    const fileInput = document.getElementById('fileInput');
+    
+    debugLog('Clearing media preview...');
+    
+    // Clear image preview
+    imagePreview.classList.remove('show');
+    imagePreview.style.display = 'none';
+    
+    // Clear video preview - need extra steps for video
+    videoPreview.classList.remove('show');
+    videoPreview.style.display = 'none';
+    videoPreview.pause(); // Stop any playing video
+    videoPreview.currentTime = 0; // Reset to beginning
+    
+    // Clear file input
+    fileInput.value = '';
+    selectedFile = null;
+    
+    // Remove delete button
+    removeExistingDeleteButton();
+    
+    // Remove visual feedback and reset placeholder
+    messageInput.classList.remove('has-media');
+    messageInput.placeholder = 'Type your message...';
+    
+    // Revoke object URLs to prevent memory leaks
+    if (imagePreview.src && imagePreview.src.startsWith('blob:')) {
+        URL.revokeObjectURL(imagePreview.src);
+        imagePreview.src = '';
+    }
+    if (videoPreview.src && videoPreview.src.startsWith('blob:')) {
+        URL.revokeObjectURL(videoPreview.src);
+        videoPreview.src = '';
+    }
+    
+    // Remove any event listeners
+    videoPreview.onmousedown = null;
+    videoPreview.ondblclick = null;
+    imagePreview.onmousedown = null;
+    imagePreview.ondblclick = null;
+    imagePreview.onclick = null;
+    
+    debugLog('Media preview cleared and placeholder reset');
+}
+
+function uploadFile(file) {
+    return new Promise((resolve, reject) => {
+        debugLog(`Starting upload for file: ${file.name} (${file.size} bytes, ${file.type})`);
+        
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const xhr = new XMLHttpRequest();
+        
+        // Show upload progress
+        const progressDiv = document.getElementById('uploadProgress');
+        const progressFill = document.getElementById('uploadProgressFill');
+        const progressPercent = document.getElementById('uploadPercent');
+        const uploadText = document.getElementById('uploadText');
+        
+        progressDiv.classList.add('show');
+        progressFill.style.width = '0%';
+        progressPercent.textContent = '0%';
+        uploadText.textContent = 'Uploading';
+
+        xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable) {
+                const percentComplete = Math.round((e.loaded / e.total) * 100);
+                progressFill.style.width = `${percentComplete}%`;
+                progressPercent.textContent = `${percentComplete}%`;
+                
+                if (percentComplete === 100) {
+                    uploadText.textContent = 'Processing';
+                }
+            }
+        };
+
+        xhr.onload = function() {
+            progressDiv.classList.remove('show');
+            
+            if (xhr.status === 200) {
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    if (response.success) {
+                        resolve(response);
+                    } else {
+                        debugLog(`Upload failed - Server response: ${JSON.stringify(response)}`);
+                        reject(new Error(response.error || 'Upload failed'));
+                    }
+                } catch (e) {
+                    debugLog(`Upload failed - Invalid response: ${xhr.responseText}`);
+                    reject(new Error('Invalid response from server'));
+                }
+            } else {
+                debugLog(`Upload failed - HTTP ${xhr.status}: ${xhr.responseText}`);
+                reject(new Error(`Upload failed with status ${xhr.status}`));
+            }
+        };
+
+        xhr.onerror = function() {
+            progressDiv.classList.remove('show');
+            debugLog(`Upload network error occurred`);
+            reject(new Error('Network error during upload'));
+        };
+
+        xhr.open('POST', '/upload');
+        xhr.send(formData);
+    });
+}
+
+function sendMediaMessage() {
+    if (!selectedFile || isUploading) {
+        return;
+    }
+
+    // Check WebSocket state
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert('Connection lost. Please refresh and try again.');
+        return;
+    }
+
+    isUploading = true;
+    const sendBtn = document.getElementById('sendBtn');
+    sendBtn.disabled = true;
+    sendBtn.classList.add('loading');
+    sendBtn.textContent = 'Send';
+
+    uploadFile(selectedFile)
+        .then(response => {
+            debugLog(`File uploaded successfully: ${JSON.stringify(response)}`);
+            
+            // Get optional text to send with media
+            const text = messageInput.value.trim();
+            
+            // Send media message via WebSocket (with optional text)
+            const mediaMessage = {
+                type: 'media',
+                mediaUrl: response.fileUrl,
+                mediaType: response.fileType,
+                fileName: response.fileName,
+                text: text // Include text if provided
+            };
+
+            debugLog(`Sending media message: ${JSON.stringify(mediaMessage)}`);
+            ws.send(JSON.stringify(mediaMessage));
+            
+            // Clear preview, reset form, and clear text input
+            clearMediaPreview();
+            messageInput.value = '';
+            
+            // Force scroll to bottom when user sends a media message
+            isUserScrolledUp = false; // Reset scroll state
+            setTimeout(() => scrollToBottom(), 100); // Small delay to ensure message is rendered
+            
+            debugLog('Media message sent successfully and scrolled to bottom');
+        })
+        .catch(error => {
+            debugLog(`Error uploading file: ${error}`);
+            alert(`Failed to upload file: ${error.message}`);
+        })
+        .finally(() => {
+            isUploading = false;
+            sendBtn.disabled = false;
+            sendBtn.classList.remove('loading');
+            sendBtn.textContent = 'Send';
+        });
+}
+
+function openImageModal(imageSrc) {
+    const modal = document.getElementById('imageModal');
+    const modalImg = document.getElementById('modalImage');
+    modal.style.display = 'block';
+    modalImg.src = imageSrc;
+}
+
+function closeImageModal() {
+    const modal = document.getElementById('imageModal');
+    modal.style.display = 'none';
+}
+
+// Message deletion functions
+function deleteMessage(messageId) {
+    debugLog(`Attempting to delete message: ${messageId}`);
+    
+    // Confirm deletion
+    if (!confirm('Are you sure you want to delete this message?')) {
+        return;
+    }
+    
+    // Check WebSocket state
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert('Connection lost. Please refresh and try again.');
+        return;
+    }
+
+    const deleteRequest = {
+        type: 'delete',
+        messageId: messageId
+    };
+
+    debugLog(`Sending delete request: ${JSON.stringify(deleteRequest)}`);
+    try {
+        ws.send(JSON.stringify(deleteRequest));
+        debugLog('Delete request sent successfully');
+    } catch (error) {
+        debugLog(`Error sending delete request: ${error}`);
+        alert('Failed to delete message. Please try again.');
+    }
+}
+
+function handleMessageDeletion(messageId) {
+    debugLog(`Handling message deletion for ID: ${messageId}`);
+    
+    // Find and remove the message element from the UI using data attribute
+    const messageEl = messagesContainer.querySelector(`[data-message-id="${messageId}"]`);
+    if (messageEl) {
+        // Add deletion animation class
+        messageEl.classList.add('deleting');
+        
+        // Remove the element after animation completes
+        setTimeout(() => {
+            if (messageEl.parentNode) {
+                messageEl.parentNode.removeChild(messageEl);
+            }
+            debugLog(`Message ${messageId} removed from UI`);
+        }, 500); // Match animation duration
+    } else {
+        debugLog(`Message element with ID ${messageId} not found in UI`);
+    }
+}
+
+// Load active rooms every 5 seconds
+setInterval(loadActiveRooms, 5000); // i will change it based on user feedback
 
 // Initialize debug log
 debugLog('Chat application initialized');
@@ -583,8 +1539,13 @@ window.addEventListener('load', () => {
                 // Clear the URL parameters
                 window.history.replaceState({}, document.title, window.location.pathname);
             }
+            
+            // Attempt to restore saved room after authentication
+            restoreSavedRoom();
         } else {
             debugLog('User not authenticated');
+            // Clear any saved room if not authenticated
+            localStorage.removeItem('currentRoom');
         }
     });
     

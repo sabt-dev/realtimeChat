@@ -25,8 +25,14 @@ func main() {
 
 	r := gin.Default()
 
+	// 50MB limit for file uploads
+	r.MaxMultipartMemory = 50 << 20
+
 	// Serve static files (for the chat client)
 	r.Static("/static", "./static")
+
+	// Serve uploaded files
+	r.Static("/uploads", "./uploads")
 
 	// Authentication routes
 	r.GET("/auth/:provider", middleware.BeginAuth)
@@ -34,6 +40,9 @@ func main() {
 	r.POST("/auth/logout", middleware.Logout)
 	r.GET("/auth/user", middleware.GetCurrentUser)
 	r.GET("/auth/check", middleware.CheckAuth)
+
+	// File upload route (requires authentication)
+	r.POST("/upload", middleware.AuthMiddleware(), handlers.HandleFileUpload)
 
 	// WebSocket endpoint (protected by auth)
 	r.GET("/ws", middleware.AuthMiddleware(), handlers.HandleWSConnection)

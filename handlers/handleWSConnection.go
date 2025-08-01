@@ -277,28 +277,118 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 	}()
 
 	for {
-		var message models.Message
-		if err := conn.ReadJSON(&message); err != nil {
+		var messageData map[string]interface{}
+		if err := conn.ReadJSON(&messageData); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WebSocket error: %v", err)
 			}
 			break
 		}
 
-		log.Printf("Received message from client %s: %+v", client.Name, message)
+		log.Printf("Received message from client %s: %+v", client.Name, messageData)
 
-		// Set message metadata
-		message.ID = generateMessageID()
-		message.Sender = client.Name
-		message.Avatar = client.Avatar // Include sender's avatar
-		message.Room = client.Room
-		message.Timestamp = time.Now()
-		message.Type = "message"
+		// Check message type
+		msgType, ok := messageData["type"].(string)
+		if !ok {
+			msgType = "message"
+		}
+
+		var message *models.Message
+
+		switch msgType {
+		case "ping":
+			// Handle heartbeat ping - no need to broadcast
+			log.Printf("Received ping from client %s", client.Name)
+			continue
+
+		case "delete":
+			// Handle message deletion
+			messageID, ok := messageData["messageId"].(string)
+			if !ok || messageID == "" {
+				log.Printf("Invalid delete request from %s: missing messageId", client.Name)
+				continue
+			}
+
+			// Load the message to check ownership
+			if deleteMsg, err := LoadMessageFromFile(client.Room, messageID); err == nil && deleteMsg != nil {
+				// Only allow deletion if the user is the sender
+				if deleteMsg.Sender == client.Name {
+					// Delete the message from file
+					if err := DeleteMessageFromFile(client.Room, messageID); err != nil {
+						log.Printf("Failed to delete message %s: %v", messageID, err)
+						continue
+					}
+
+					// Create delete notification message
+					message = &models.Message{
+						ID:        messageID, // Use the same ID for deletion
+						Sender:    client.Name,
+						Avatar:    client.Avatar,
+						Room:      client.Room,
+						Text:      "",
+						Timestamp: time.Now(),
+						Type:      "delete",
+					}
+					log.Printf("Message %s deleted by %s", messageID, client.Name)
+				} else {
+					log.Printf("User %s attempted to delete message %s from %s", client.Name, messageID, deleteMsg.Sender)
+					continue
+				}
+			} else {
+				log.Printf("Message %s not found for deletion", messageID)
+				continue
+			}
+
+		case "media":
+			// Handle media message
+			mediaURL, _ := messageData["mediaUrl"].(string)
+			mediaType, _ := messageData["mediaType"].(string)
+			fileName, _ := messageData["fileName"].(string)
+			text, _ := messageData["text"].(string) // Get optional text with media
+
+			if mediaURL == "" {
+				log.Printf("Invalid media message from %s: missing mediaUrl", client.Name)
+				continue
+			}
+
+			// Create media message (can include text)
+			message = &models.Message{
+				ID:        generateMessageID(),
+				Sender:    client.Name,
+				Avatar:    client.Avatar,
+				Room:      client.Room,
+				Text:      text, // Allow text with media messages
+				Timestamp: time.Now(),
+				Type:      "media",
+				MediaURL:  mediaURL,
+				MediaType: mediaType,
+				FileName:  fileName,
+			}
+
+		default:
+			// Handle regular text message
+			text, ok := messageData["text"].(string)
+			if !ok || strings.TrimSpace(text) == "" {
+				log.Printf("Empty message from %s, skipping", client.Name)
+				continue
+			}
+
+			// Create regular message
+			message = &models.Message{
+				ID:        generateMessageID(),
+				Sender:    client.Name,
+				Avatar:    client.Avatar,
+				Room:      client.Room,
+				Text:      text,
+				Timestamp: time.Now(),
+				Type:      "message",
+			}
+		}
 
 		log.Printf("Processed message: %+v", message)
 
 		// Broadcast message
-		chatHub.broadcast <- &message
+		chatHub.broadcast <- message
 	}
 }
 
