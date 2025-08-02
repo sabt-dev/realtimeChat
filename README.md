@@ -352,15 +352,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Google Fonts](https://fonts.google.com) - Typography
 - [CSS Animations](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Animations) - Visual effects
 
-## 🐛 Issues and Support
-
-If you encounter any issues or have questions:
-
-1. Check the [Issues](https://github.com/sabt-dev/realtimeChat/issues) page
-2. Search for existing solutions
-3. Create a new issue with detailed information
-4. Include steps to reproduce the problem
-
 ## 🔮 Future Enhancements
 
 - [ ] Message reactions and emojis
@@ -370,7 +361,7 @@ If you encounter any issues or have questions:
 - [ ] User roles and permissions
 - [ ] Bot integration
 - [ ] Message encryption
-- [ ] Database persistence (PostgreSQL/MongoDB)
+- [ ] Database persistence (MongoDB)
 - [ ] Redis for scaling
 - [ ] Mobile applications (React Native/Flutter)
 
