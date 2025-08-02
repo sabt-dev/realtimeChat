@@ -118,10 +118,10 @@ function restoreSavedRoom() {
     const savedRoom = localStorage.getItem('currentRoom');
     if (savedRoom && savedRoom.trim()) {
         debugLog(`Found saved room: ${savedRoom}, attempting to rejoin...`);
-        // Small delay to ensure UI is ready
+        // Smaller delay since UI is already properly set
         setTimeout(() => {
             joinRoomByName(savedRoom);
-        }, 500);
+        }, 100);
     } else {
         debugLog('No saved room found');
     }
@@ -143,6 +143,21 @@ function updateAuthUI() {
             debugLog(`Avatar set successfully to: ${currentUser.avatar}`);
         } else {
             debugLog('No avatar URL found in user data');
+        }
+        
+        // Check if user has a saved room and should go directly to chat
+        const savedRoom = localStorage.getItem('currentRoom');
+        if (savedRoom && savedRoom.trim()) {
+            debugLog(`User has saved room: ${savedRoom}, hiding login screen`);
+            loginScreen.classList.add('hidden');
+            chatInterface.classList.remove('hidden');
+            // Set room title and show connecting status
+            roomTitle.textContent = `Room: ${savedRoom}`;
+            updateConnectionStatus('Connecting...');
+        } else {
+            // No saved room, show login screen
+            chatInterface.classList.add('hidden');
+            loginScreen.classList.remove('hidden');
         }
     } else {
         loginOptions.classList.remove('hidden');
