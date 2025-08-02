@@ -100,25 +100,18 @@ realtimeChat/
 ├── .env.example           # Environment variables template
 ├── .gitignore             # Git ignore rules
 ├── handlers/              # HTTP and WebSocket handlers
-│   ├── auth.go           # Authentication handlers
-│   ├── chat.go           # Chat WebSocket handlers
 │   ├── handleWSConnection.go  # WebSocket connection management
 │   ├── persistMessage.go     # Message persistence
 │   └── upload.go         # File upload handlers
 ├── middleware/            # HTTP middleware
-│   ├── auth.go           # Authentication middleware
-│   └── cors.go           # CORS configuration
+│   └──auth.go           # Authentication middleware
 ├── models/               # Data models
-│   ├── message.go        # Message structures
-│   ├── room.go           # Room management
-│   └── user.go           # User models
-├── persistence/          # Data persistence layer
-│   └── storage.go        # In-memory storage implementation
+│   └── message.go        # Message structures
+├── persistence/          # Data persistence 
 ├── static/               # Frontend assets
 │   ├── index.html        # Main HTML page
 │   ├── styles.css        # Application styles
-│   ├── chat.js           # Chat functionality
-│   └── uploads/          # User uploaded files
+│   └── chat.js           # Chat functionality
 └── uploads/              # File upload directory
 ```
 
