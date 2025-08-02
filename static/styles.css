@@ -290,7 +290,7 @@ body::before {
     }
 }
 
-/* Add smooth scrolling and modern interactions for all mobile */
+/* Add smooth scrolling and modern interactions for mobile */
 @media (max-width: 768px) {
     * {
         -webkit-tap-highlight-color: rgba(99, 102, 241, 0.2);
@@ -882,7 +882,7 @@ body::before {
 
 .messages {
     flex: 1;
-    padding: 2rem;
+    padding: 2rem 2rem 0 2rem;
     overflow-y: auto;
     overflow-x: hidden;
     background: var(--dark-bg);

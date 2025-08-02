@@ -1,6 +1,6 @@
 # 💬 RealtimeChat
 
-A modern, real-time chat application built with Go and WebSockets, featuring OAuth authentication, media sharing, and a beautiful neon-themed UI.
+A modern, real-time chat application built with Go and WebSockets, featuring OAuth authentication, media sharing, message management, and a beautiful neon-themed UI with advanced scrolling and media handling.
 
 ![Chat Application](https://img.shields.io/badge/Status-Active-brightgreen)
 ![Go Version](https://img.shields.io/badge/Go-1.23+-blue)
@@ -14,36 +14,49 @@ A modern, real-time chat application built with Go and WebSockets, featuring OAu
 - **User Profiles**: Display user avatars and information
 
 ### 💬 Real-time Messaging
-- **WebSocket Communication**: Instant message delivery
+- **WebSocket Communication**: Instant message delivery with heartbeat monitoring
 - **Multiple Rooms**: Join and switch between different chat rooms
-- **Message History**: Persistent chat history with room-specific storage
+- **Message History**: Persistent chat history with room-specific storage using GORM
 - **Live User Count**: See active users in each room
-- **Auto-reconnection**: Automatic reconnection on connection loss
+- **Auto-reconnection**: Automatic reconnection on connection loss with exponential backoff
+- **Message Management**: Delete your own messages with confirmation
+- **Smart Scrolling**: Enhanced auto-scrolling with manual override detection
 
 ### 📱 Media Sharing
 - **Image Support**: Upload and share JPEG, PNG, GIF, WebP images
 - **Video Support**: Upload and share MP4, WebM, MOV, AVI videos
-- **Drag & Drop**: Easy file uploading with drag and drop
+- **Drag & Drop**: Easy file uploading with drag and drop interface
 - **Paste Images**: Paste images directly from clipboard
-- **URL Media**: Automatically detect and embed media from URLs
+- **URL Media Detection**: Automatically detect and embed media from URLs
+- **File Management**: Automatic file cleanup when messages are deleted
 - **File Size Limits**: 10MB limit for optimal performance
+- **Preview System**: Media preview before sending with removal option
 
 ### 🎨 Modern UI/UX
 - **Neon Theme**: Beautiful glowing effects and animations
-- **Responsive Design**: Works on desktop, tablet, and mobile
-- **Dark Theme**: Eye-friendly dark interface
-- **Smooth Animations**: Polished user interactions
+- **Responsive Design**: Works on desktop, tablet, and mobile devices
+- **Dark Theme**: Eye-friendly dark interface with neon accents
+- **Smooth Animations**: Polished user interactions and transitions
 - **Message Bubbles**: Distinct styling for own vs others' messages
-- **Avatar Positioning**: Avatars outside message bubbles
-- **Spinning Glow Effects**: Dynamic visual effects
+- **Avatar System**: User avatars positioned outside message bubbles
+- **Visual Feedback**: Loading indicators and connection status
+- **Enhanced Scrolling**: Smart auto-scroll with ResizeObserver and MutationObserver
 
 ### 🛠️ Advanced Features
-- **Message Deletion**: Delete your own messages
-- **Scroll Management**: Smart auto-scrolling with manual override
-- **Link Processing**: Automatic clickable links in messages
-- **Upload Progress**: Visual feedback during file uploads
-- **Connection Status**: Real-time connection status indicator
-- **New Message Notifications**: Notification when scrolled up
+- **Message Deletion**: Delete your own messages with database and file cleanup
+- **Intelligent Scrolling**: 
+  - Auto-scroll for new messages when user is at bottom
+  - Manual scroll detection with notification for new messages
+  - Enhanced media loading detection with multiple fallback scrolls
+  - ResizeObserver for media size changes
+  - MutationObserver for DOM changes
+- **Link Processing**: Automatic clickable links in messages with security
+- **Upload Progress**: Visual feedback during file uploads with progress bars
+- **Connection Management**: Real-time connection status with automatic recovery
+- **New Message Notifications**: Notification counter when scrolled up
+- **Media File Cleanup**: Automatic deletion of media files from filesystem when messages are deleted
+- **Join/Leave Messages**: System messages for user room activity
+- **Enhanced Debugging**: Comprehensive logging for troubleshooting
 
 ## 🚀 Quick Start
 
@@ -94,25 +107,30 @@ A modern, real-time chat application built with Go and WebSockets, featuring OAu
 
 ```
 realtimeChat/
-├── main.go                 # Application entry point
-├── go.mod                  # Go module dependencies
-├── go.sum                  # Dependency checksums
-├── .env.example           # Environment variables template
-├── .gitignore             # Git ignore rules
-├── handlers/              # HTTP and WebSocket handlers
-│   ├── handleWSConnection.go  # WebSocket connection management
-│   ├── persistMessage.go     # Message persistence
-│   └── upload.go         # File upload handlers
-├── middleware/            # HTTP middleware
-│   └──auth.go           # Authentication middleware
-├── models/               # Data models
-│   └── message.go        # Message structures
-├── persistence/          # Data persistence 
-├── static/               # Frontend assets
-│   ├── index.html        # Main HTML page
-│   ├── styles.css        # Application styles
-│   └── chat.js           # Chat functionality
-└── uploads/              # File upload directory
+├── main.go                     # Application entry point with Gin server setup
+├── go.mod                      # Go module dependencies
+├── go.sum                      # Dependency checksums
+├── .env.example               # Environment variables template
+├── .gitignore                 # Git ignore rules
+├── LICENSE                    # MIT License
+├── README.md                  # Project documentation
+├── database/                  # Database configuration and setup
+├── handlers/                  # HTTP and WebSocket handlers
+│   ├── api.go                 # REST API endpoints
+│   ├── fileUpload.go          # File upload handlers with validation
+│   ├── handleWSConnection.go  # WebSocket connection and message management
+│   └── persistMessage.go     # Message persistence logic
+├── middleware/                # HTTP middleware
+│   └── auth.go               # OAuth authentication middleware
+├── models/                    # Data models and structures
+│   └── message.go            # Message, User, Room models with GORM
+├── services/                  # Business logic services
+│   └── database_service.go   # Database operations (User, Room, Message services)
+├── static/                    # Frontend assets
+│   ├── index.html            # Main HTML page with responsive design
+│   ├── styles.css            # Application styles with neon theme
+│   └── chat.js               # Enhanced chat functionality with advanced scrolling
+└── uploads/                   # File upload directory (auto-created)
 ```
 
 ## 🔧 Configuration
@@ -141,6 +159,74 @@ realtimeChat/
 | `GOOGLE_CLIENT_SECRET` | Google OAuth App Client Secret | Yes |
 | `SESSION_SECRET` | Secret key for session encryption | Yes |
 | `PORT` | Server port (default: 8080) | No |
+| `DB_HOST` | Database host (default: localhost) | No |
+| `DB_PORT` | Database port (default: 5432) | No |
+| `DB_NAME` | Database name (default: realtimechat) | No |
+| `DB_USER` | Database user (default: postgres) | No |
+| `DB_PASSWORD` | Database password | No |
+
+## 🗃️ Database Integration
+
+### GORM Models
+The application uses GORM (Go Object-Relational Mapping) for database operations with the following models:
+
+#### User Model
+```go
+type User struct {
+    ID        uint      `gorm:"primaryKey"`
+    Name      string    `gorm:"not null"`
+    Email     string    `gorm:"uniqueIndex;not null"`
+    Avatar    string
+    CreatedAt time.Time
+    UpdatedAt time.Time
+    Messages    []Message    `gorm:"foreignKey:SenderID"`
+    RoomMembers []RoomMember `gorm:"foreignKey:UserID"`
+}
+```
+
+#### Room Model
+```go
+type Room struct {
+    ID          uint      `gorm:"primaryKey"`
+    Name        string    `gorm:"uniqueIndex;not null"`
+    Description string
+    CreatedAt   time.Time
+    UpdatedAt   time.Time
+    Messages []Message    `gorm:"foreignKey:RoomID"`
+    Members  []RoomMember `gorm:"foreignKey:RoomID"`
+}
+```
+
+#### Message Model
+```go
+type Message struct {
+    ID        uint           `gorm:"primaryKey"`
+    UUID      string         `gorm:"uniqueIndex;not null"`
+    SenderID  uint           `gorm:"not null"`
+    RoomID    uint           `gorm:"not null"`
+    Text      string
+    Type      string         `gorm:"not null;default:message"`
+    MediaURL  string
+    MediaType string
+    FileName  string
+    CreatedAt time.Time
+    UpdatedAt time.Time
+    DeletedAt gorm.DeletedAt `gorm:"index"`
+    Sender User `gorm:"foreignKey:SenderID"`
+    Room   Room `gorm:"foreignKey:RoomID"`
+}
+```
+
+### Database Services
+- **UserService**: Handles user creation, authentication, and profile management
+- **RoomService**: Manages chat rooms and user memberships
+- **MessageService**: Handles message CRUD operations with media file cleanup
+
+### Features
+- **Soft Deletes**: Messages are soft-deleted, maintaining data integrity
+- **Automatic Migrations**: Database schema automatically created and updated
+- **Foreign Key Relationships**: Proper relational data modeling
+- **File Cleanup**: Orphaned media files automatically removed when messages are deleted
 
 ## 📡 API Endpoints
 
@@ -181,7 +267,7 @@ realtimeChat/
   "text": "Hello, world!"
 }
 
-// Send a media message
+// Send a media message (file upload)
 {
   "type": "media",
   "mediaUrl": "/uploads/image.jpg",
@@ -190,13 +276,22 @@ realtimeChat/
   "text": "Optional caption"
 }
 
-// Delete a message
+// Send a media message (URL)
+{
+  "type": "media",
+  "mediaUrl": "https://example.com/image.jpg",
+  "mediaType": "image", 
+  "fileName": "image.jpg",
+  "text": "Optional caption"
+}
+
+// Delete a message (with automatic file cleanup)
 {
   "type": "delete",
   "messageId": "uuid"
 }
 
-// Heartbeat ping
+// Heartbeat ping (connection monitoring)
 {
   "type": "ping"
 }
@@ -204,7 +299,7 @@ realtimeChat/
 
 ### Server to Client
 ```javascript
-// Regular message
+// Regular text message
 {
   "id": "uuid",
   "type": "message",
@@ -229,15 +324,17 @@ realtimeChat/
 
 // System message (join/leave)
 {
-  "type": "join",
+  "type": "join", // or "leave"
   "text": "user123 joined the room",
   "timestamp": "2025-01-01T12:00:00Z"
 }
 
-// Message deletion
+// Message deletion notification
 {
   "type": "delete",
-  "id": "uuid"
+  "id": "uuid",
+  "sender": "user123",
+  "timestamp": "2025-01-01T12:00:00Z"
 }
 ```
 
@@ -262,20 +359,33 @@ realtimeChat/
 
 ## 🛡️ Security Features
 
-- **OAuth Authentication**: Secure third-party authentication
-- **Session Management**: Encrypted session cookies
-- **File Upload Validation**: Type and size restrictions
-- **XSS Protection**: HTML escaping and sanitization
+- **OAuth Authentication**: Secure third-party authentication with GitHub and Google
+- **Session Management**: Encrypted session cookies with secure handling
+- **File Upload Validation**: Comprehensive type, size, and security restrictions
+- **File Cleanup**: Automatic removal of orphaned media files when messages are deleted
+- **XSS Protection**: HTML escaping and sanitization for all user inputs
 - **CSRF Protection**: Session-based request validation
 - **Secure Headers**: Security-focused HTTP headers
+- **Path Traversal Protection**: Safe file path handling in uploads directory
+- **Authorization Checks**: Message deletion restricted to message owners
+- **Input Validation**: Server-side validation for all WebSocket messages
 
 ## 🚀 Performance Optimizations
 
-- **WebSocket Connection Pooling**: Efficient connection management
-- **File Size Limits**: 10MB upload limit for optimal performance
-- **Image Lazy Loading**: Efficient media loading
-- **Message Pagination**: Smart message history loading
+- **WebSocket Connection Pooling**: Efficient connection management with heartbeat monitoring
+- **File Size Limits**: 10MB upload limit for optimal performance and bandwidth
+- **Smart Scrolling**: 
+  - ResizeObserver for tracking media loading and layout changes
+  - MutationObserver for DOM change detection
+  - Multiple fallback scroll attempts with progressive delays
+  - Instant scrolling mode for history loading
+- **Image Optimization**: Efficient media loading with proper event handling
+- **Message Pagination**: Smart message history loading to reduce initial load time
 - **Connection Recovery**: Automatic reconnection with exponential backoff
+- **Debounced Scrolling**: Optimized scroll event handling to prevent performance issues
+- **File Cleanup**: Background file deletion to prevent disk space issues
+- **Database Optimization**: GORM with proper indexing and soft deletes
+- **Memory Management**: Proper cleanup of object URLs and event listeners
 
 ## 🔄 Development
 
@@ -347,16 +457,45 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🔮 Future Enhancements
 
+### 🎯 Planned Features
 - [ ] Message reactions and emojis
-- [ ] Private messaging
-- [ ] Voice and video calls
-- [ ] Message search functionality
-- [ ] User roles and permissions
-- [ ] Bot integration
-- [ ] Message encryption
-- [ ] Database persistence (MongoDB)
-- [ ] Redis for scaling
+- [ ] Private messaging between users
+- [ ] Voice and video calls integration
+- [ ] Advanced message search functionality
+- [ ] User roles and permissions (admin, moderator)
+- [ ] Bot integration and webhooks
+- [ ] End-to-end message encryption
+- [ ] Message threading and replies
+- [ ] File sharing beyond media (documents, PDFs)
+- [ ] Message formatting (markdown support)
+
+### 🏗️ Technical Improvements
+- [ ] Database migration to PostgreSQL/MongoDB
+- [ ] Redis for session storage and scaling
+- [ ] Horizontal scaling with load balancing
+- [ ] CDN integration for media files
+- [ ] Rate limiting and anti-spam measures
+- [ ] Message editing functionality
+- [ ] Offline mode with sync when online
+- [ ] Push notifications
+
+### 📱 Platform Expansion
 - [ ] Mobile applications (React Native/Flutter)
+- [ ] Desktop applications (Electron)
+- [ ] Progressive Web App (PWA) features
+- [ ] Browser notifications
+- [ ] Dark/light theme toggle
+
+### ✅ Recently Implemented
+- [x] Message deletion with file cleanup
+- [x] Enhanced auto-scrolling with media detection
+- [x] URL media preview and embedding
+- [x] Advanced connection management
+- [x] File upload with drag & drop
+- [x] Clipboard image pasting
+- [x] Real-time user count and room management
+- [x] Join/leave system messages
+- [x] Comprehensive error handling and logging
 
 ---
 

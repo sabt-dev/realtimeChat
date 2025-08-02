@@ -171,6 +171,41 @@ messageInput.addEventListener('paste', handlePaste);
 // Add scroll event listener to detect manual scrolling
 if (messagesContainer) {
     messagesContainer.addEventListener('scroll', handleScroll);
+    
+    // Add MutationObserver to detect DOM changes that might affect scrolling
+    const messagesObserver = new MutationObserver((mutations) => {
+        let shouldScroll = false;
+        
+        mutations.forEach((mutation) => {
+            // Check if new nodes were added (new messages)
+            if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE && node.classList && node.classList.contains('message')) {
+                        // A new message was added - check if we should auto-scroll
+                        if (!isUserScrolledUp) {
+                            shouldScroll = true;
+                        }
+                    }
+                });
+            }
+        });
+        
+        if (shouldScroll) {
+            // Use a slight delay to allow for image loading
+            setTimeout(() => {
+                if (!isUserScrolledUp) {
+                    scrollToBottom();
+                    debugLog('MutationObserver triggered scroll for new message');
+                }
+            }, 100);
+        }
+    });
+    
+    // Observe the messages container for child list changes
+    messagesObserver.observe(messagesContainer, {
+        childList: true,
+        subtree: true
+    });
 }
 
 function joinRoom() {
@@ -308,8 +343,8 @@ function createNewWebSocket(wsUrl) {
             setTimeout(() => {
                 if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
                     loadRoomHistory(true);
-                    // Additional scroll to bottom after history loads
-                    setTimeout(() => scrollToBottom(), 1000);
+                    // Use instant scroll for initial room join
+                    setTimeout(() => scrollToBottomInstant(), 1000);
                 }
             }, 500);
         } catch (error) {
@@ -462,8 +497,8 @@ function displayMessage(message, isFromHistory = false) {
     debugLog(`Displaying message: ${JSON.stringify(message)}, isFromHistory: ${isFromHistory}`);
     debugLog(`Current username: "${username}", Message sender: "${message.sender}"`);
     
-    // Filter out empty or invalid messages (but allow media messages)
-    if (!message || (message.type !== 'media' && (!message.text || typeof message.text !== 'string' || message.text.trim() === ''))) {
+    // Filter out empty or invalid messages (but allow media, join, and leave messages)
+    if (!message || (message.type !== 'media' && message.type !== 'join' && message.type !== 'leave' && (!message.text || typeof message.text !== 'string' || message.text.trim() === ''))) {
         debugLog('Skipping empty or invalid message');
         return;
     }
@@ -501,7 +536,6 @@ function displayMessage(message, isFromHistory = false) {
             mediaHtml = `
                 <div class="message-media">
                     <img src="${escapeHtml(message.mediaUrl)}" alt="Shared image" onclick="openImageModal('${escapeHtml(message.mediaUrl)}')">
-                    ${message.fileName ? `<div class="media-filename">${escapeHtml(message.fileName)}</div>` : ''}
                 </div>
             `;
         } else if (message.mediaType === 'video') {
@@ -510,7 +544,6 @@ function displayMessage(message, isFromHistory = false) {
                     <video src="${escapeHtml(message.mediaUrl)}" controls>
                         Your browser does not support the video tag.
                     </video>
-                    ${message.fileName ? `<div class="media-filename">${escapeHtml(message.fileName)}</div>` : ''}
                 </div>
             `;
         }
@@ -598,6 +631,29 @@ function displayMessage(message, isFromHistory = false) {
     
     // Determine if this is the user's own message
     const isOwnMessage = message.sender === username;
+    const shouldAutoScroll = isOwnMessage || !isUserScrolledUp;
+    
+    // Add ResizeObserver for media messages to handle size changes
+    if (shouldAutoScroll && (message.type === 'media' || messageEl.querySelectorAll('img, video').length > 0)) {
+        const resizeObserver = new ResizeObserver((entries) => {
+            for (let entry of entries) {
+                // When the message element changes size (due to media loading), scroll to bottom
+                if (shouldAutoScroll) {
+                    setTimeout(() => scrollToBottom(), 10);
+                    debugLog('ResizeObserver triggered scroll for media message');
+                }
+            }
+        });
+        
+        // Observe the message element for size changes
+        resizeObserver.observe(messageEl);
+        
+        // Stop observing after a reasonable time to prevent memory leaks
+        setTimeout(() => {
+            resizeObserver.disconnect();
+            debugLog('ResizeObserver disconnected for message element');
+        }, 5000);
+    }
     
     // Check if we should auto-scroll or show notification
     // Always scroll for own messages, and scroll for any message (including join/leave) when user is at bottom
@@ -606,38 +662,94 @@ function displayMessage(message, isFromHistory = false) {
         if (isOwnMessage) {
             isUserScrolledUp = false; // Reset scroll state for own messages
         }
+        // Use regular scrolling for normal message display
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
         debugLog(`Auto-scrolled to bottom (own message: ${isOwnMessage}, at bottom: ${!isUserScrolledUp})`);
         
-        // Also scroll after any images finish loading to handle media messages
-        const images = messageEl.querySelectorAll('img');
-        if (images.length > 0) {
-            let loadedImages = 0;
-            images.forEach(img => {
-                if (img.complete) {
-                    loadedImages++;
-                } else {
-                    img.onload = () => {
-                        loadedImages++;
-                        if (loadedImages === images.length && !isUserScrolledUp) {
-                            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                            debugLog('Scrolled to bottom after images loaded');
+        // Enhanced scroll handling for media messages (images and videos)
+        const mediaElements = messageEl.querySelectorAll('img, video');
+        if (mediaElements.length > 0) {
+            let loadedCount = 0;
+            const totalMedia = mediaElements.length;
+            const shouldAutoScroll = isOwnMessage || !isUserScrolledUp;
+            
+            // Function to scroll once all media is loaded
+            const scrollAfterLoad = () => {
+                loadedCount++;
+                debugLog(`Media element ${loadedCount}/${totalMedia} loaded`);
+                
+                if (loadedCount === totalMedia && shouldAutoScroll) {
+                    // Multiple scroll attempts for better reliability with longer delays
+                    setTimeout(() => scrollToBottom(), 50);
+                    setTimeout(() => scrollToBottom(), 150);
+                    setTimeout(() => scrollToBottom(), 300);
+                    setTimeout(() => scrollToBottom(), 500);
+                    debugLog(`Scrolled to bottom after ${loadedCount}/${totalMedia} media elements loaded`);
+                }
+            };
+            
+            mediaElements.forEach((element, index) => {
+                debugLog(`Setting up load handler for media element ${index + 1}: ${element.tagName}`);
+                
+                if (element.tagName.toLowerCase() === 'img') {
+                    // For images, check if already loaded
+                    if (element.complete) {
+                        if (element.naturalHeight !== 0) {
+                            // Image is loaded successfully
+                            debugLog(`Image ${index + 1} already loaded`);
+                            scrollAfterLoad();
+                        } else {
+                            // Image failed to load
+                            debugLog(`Image ${index + 1} failed to load (naturalHeight = 0)`);
+                            scrollAfterLoad();
                         }
-                    };
-                    img.onerror = () => {
-                        loadedImages++;
-                        if (loadedImages === images.length && !isUserScrolledUp) {
-                            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                            debugLog('Scrolled to bottom after image error');
-                        }
-                    };
+                    } else {
+                        // Image still loading
+                        debugLog(`Image ${index + 1} still loading, setting up handlers`);
+                        element.onload = () => {
+                            debugLog(`Image ${index + 1} loaded successfully`);
+                            scrollAfterLoad();
+                        };
+                        element.onerror = () => {
+                            debugLog(`Image ${index + 1} failed to load`);
+                            scrollAfterLoad();
+                        };
+                    }
+                } else if (element.tagName.toLowerCase() === 'video') {
+                    // For videos, check readyState
+                    if (element.readyState >= 1) { // HAVE_METADATA or higher
+                        debugLog(`Video ${index + 1} already has metadata`);
+                        scrollAfterLoad();
+                    } else {
+                        debugLog(`Video ${index + 1} waiting for metadata`);
+                        element.onloadedmetadata = () => {
+                            debugLog(`Video ${index + 1} metadata loaded`);
+                            scrollAfterLoad();
+                        };
+                        element.onerror = () => {
+                            debugLog(`Video ${index + 1} failed to load`);
+                            scrollAfterLoad();
+                        };
+                    }
                 }
             });
-            // If all images were already loaded, scroll again (only if user is at bottom)
-            if (loadedImages === images.length && !isUserScrolledUp) {
+            
+            // Enhanced fallback: multiple attempts with increasing delays
+            if (shouldAutoScroll) {
                 setTimeout(() => {
-                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                }, 10);
+                    scrollToBottom();
+                    debugLog('Fallback scroll #1 for media message');
+                }, 800);
+                
+                setTimeout(() => {
+                    scrollToBottom();
+                    debugLog('Fallback scroll #2 for media message');
+                }, 1500);
+                
+                setTimeout(() => {
+                    scrollToBottom();
+                    debugLog('Final fallback scroll for media message');
+                }, 2500);
             }
         }
     } else {
@@ -669,8 +781,68 @@ function clearMessages() {
 
 function scrollToBottom() {
     if (messagesContainer) {
+        // Store current scroll info for debugging
+        const initialScrollTop = messagesContainer.scrollTop;
+        const initialScrollHeight = messagesContainer.scrollHeight;
+        
+        // Regular scrolling (can be smooth if CSS allows)
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        debugLog(`Scrolled to bottom. ScrollTop: ${messagesContainer.scrollTop}, ScrollHeight: ${messagesContainer.scrollHeight}`);
+        
+        // Double-check and force scroll if needed with multiple attempts
+        setTimeout(() => {
+            const newScrollHeight = messagesContainer.scrollHeight;
+            const tolerance = 10; // Allow for small rounding differences
+            
+            if (messagesContainer.scrollTop < newScrollHeight - messagesContainer.clientHeight - tolerance) {
+                messagesContainer.scrollTop = newScrollHeight;
+                debugLog(`Force-scrolled to bottom (second attempt). Height changed: ${initialScrollHeight} -> ${newScrollHeight}`);
+            }
+        }, 20);
+        
+        // Third attempt for stubborn cases
+        setTimeout(() => {
+            const finalScrollHeight = messagesContainer.scrollHeight;
+            const tolerance = 10;
+            
+            if (messagesContainer.scrollTop < finalScrollHeight - messagesContainer.clientHeight - tolerance) {
+                messagesContainer.scrollTop = finalScrollHeight;
+                debugLog(`Force-scrolled to bottom (third attempt). Final height: ${finalScrollHeight}`);
+            }
+        }, 100);
+        
+        debugLog(`Scrolled to bottom. Initial: ${initialScrollTop}/${initialScrollHeight}, Current: ${messagesContainer.scrollTop}/${messagesContainer.scrollHeight}`);
+        
+        // Reset scroll state and hide new message notification
+        isUserScrolledUp = false;
+        pendingMessages = 0;
+        hideNewMessageNotification();
+    }
+}
+
+function scrollToBottomInstant() {
+    if (messagesContainer) {
+        // Use scrollTo with instant behavior to ensure no smooth scrolling
+        messagesContainer.scrollTo({
+            top: messagesContainer.scrollHeight,
+            behavior: 'instant'
+        });
+        
+        // Fallback for older browsers - direct scrollTop assignment
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        
+        // Double-check and force scroll if needed
+        setTimeout(() => {
+            if (messagesContainer.scrollTop < messagesContainer.scrollHeight - messagesContainer.clientHeight - 5) {
+                messagesContainer.scrollTo({
+                    top: messagesContainer.scrollHeight,
+                    behavior: 'instant'
+                });
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                debugLog('Force-scrolled to bottom instantly (second attempt)');
+            }
+        }, 10);
+        
+        debugLog(`Scrolled to bottom instantly. ScrollTop: ${messagesContainer.scrollTop}, ScrollHeight: ${messagesContainer.scrollHeight}`);
         
         // Reset scroll state and hide new message notification
         isUserScrolledUp = false;
@@ -797,22 +969,23 @@ function loadRoomHistory(clearFirst = true) {
                 // Sort messages by timestamp
                 data.messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
                 
-                // Display historical messages - include both text and media messages
+                // Display historical messages - include text, media, join, and leave messages
                 data.messages.forEach(message => {
-                    // Display message if it has valid content (text for regular messages, mediaUrl for media messages)
+                    // Display message if it has valid content or is a system message
                     if (message && 
-                        ((message.type === 'media' && message.mediaUrl) || 
-                         (message.type !== 'media' && message.text && typeof message.text === 'string' && message.text.trim() !== '') ||
-                         (message.type === 'join' || message.type === 'leave'))) {
+                        (message.type === 'join' || 
+                         message.type === 'leave' ||
+                         (message.type === 'media' && message.mediaUrl) || 
+                         (message.text && typeof message.text === 'string' && message.text.trim() !== ''))) {
                         displayMessage(message, true); // Pass true for isFromHistory
                     }
                 });
                 
-                // Ensure scroll to bottom after all messages are loaded
+                // Ensure instant scroll to bottom after all messages are loaded when joining/refreshing
                 // Use multiple timeouts to handle different loading scenarios
-                setTimeout(() => scrollToBottom(), 50);
-                setTimeout(() => scrollToBottom(), 200);
-                setTimeout(() => scrollToBottom(), 500);
+                setTimeout(() => scrollToBottomInstant(), 50);
+                setTimeout(() => scrollToBottomInstant(), 200);
+                setTimeout(() => scrollToBottomInstant(), 500);
             }
         })
         .catch(error => {
@@ -995,11 +1168,15 @@ function sendUrlMediaMessage(mediaUrl, originalText) {
         ws.send(JSON.stringify(mediaMessage));
         messageInput.value = '';
         
-        // Force scroll to bottom when user sends a URL media message
+        // Enhanced scroll handling for URL media messages
         isUserScrolledUp = false; // Reset scroll state
-        setTimeout(() => scrollToBottom(), 100); // Small delay to ensure message is rendered
+        // Multiple scroll attempts with increasing delays to handle media loading
+        setTimeout(() => scrollToBottom(), 50);
+        setTimeout(() => scrollToBottom(), 200);
+        setTimeout(() => scrollToBottom(), 500);
+        setTimeout(() => scrollToBottom(), 1000);
         
-        debugLog('URL media message sent successfully and scrolled to bottom');
+        debugLog('URL media message sent successfully with enhanced scrolling');
     } catch (error) {
         debugLog(`Error sending URL media message: ${error}`);
         alert('Failed to send media message. Please try again.');
@@ -1437,11 +1614,15 @@ function sendMediaMessage() {
             clearMediaPreview();
             messageInput.value = '';
             
-            // Force scroll to bottom when user sends a media message
+            // Enhanced scroll handling for sent media messages
             isUserScrolledUp = false; // Reset scroll state
-            setTimeout(() => scrollToBottom(), 100); // Small delay to ensure message is rendered
+            // Multiple scroll attempts with increasing delays to handle media loading
+            setTimeout(() => scrollToBottom(), 50);
+            setTimeout(() => scrollToBottom(), 200);
+            setTimeout(() => scrollToBottom(), 500);
+            setTimeout(() => scrollToBottom(), 1000);
             
-            debugLog('Media message sent successfully and scrolled to bottom');
+            debugLog('Media message sent successfully with enhanced scrolling');
         })
         .catch(error => {
             debugLog(`Error uploading file: ${error}`);

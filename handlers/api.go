@@ -1,35 +1,81 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
+	"strconv"
 
-	"github/sabt-dev/realtimeChat/models"
+	"github/sabt-dev/realtimeChat/services"
 
 	"github.com/gin-gonic/gin"
 )
 
-// GetRooms returns all active rooms
+// GetRooms returns all available rooms
 func GetRooms(c *gin.Context) {
+	roomService := services.NewRoomService()
+
+	// Get all rooms from database
+	dbRooms, err := roomService.GetAllRooms()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch rooms"})
+		return
+	}
+
+	// Combine database rooms with active client information
 	chatHub.mutex.RLock()
 	defer chatHub.mutex.RUnlock()
 
 	rooms := make([]gin.H, 0)
-	for _, room := range chatHub.rooms {
+
+	// Add rooms from database with their active client counts
+	for _, dbRoom := range dbRooms {
+		roomName := dbRoom["name"].(string)
 		clientNames := make([]string, 0)
-		for _, client := range room.Clients {
-			clientNames = append(clientNames, client.Name)
+		clientCount := 0
+
+		// Check if room has active clients
+		if activeRoom, exists := chatHub.rooms[roomName]; exists {
+			for _, client := range activeRoom {
+				clientNames = append(clientNames, client.Name)
+			}
+			clientCount = len(activeRoom)
 		}
 
 		rooms = append(rooms, gin.H{
-			"id":      room.ID,
-			"name":    room.Name,
-			"clients": clientNames,
-			"count":   len(room.Clients),
+			"id":          dbRoom["id"],
+			"name":        roomName,
+			"description": dbRoom["description"],
+			"clients":     clientNames,
+			"count":       clientCount,
+			"memberCount": dbRoom["memberCount"], // Total members from DB
 		})
+	}
+
+	// Add any active rooms that might not be in the database yet
+	for roomName, activeRoom := range chatHub.rooms {
+		// Check if this room is already in our list
+		found := false
+		for _, room := range rooms {
+			if room["name"] == roomName {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			clientNames := make([]string, 0)
+			for _, client := range activeRoom {
+				clientNames = append(clientNames, client.Name)
+			}
+
+			rooms = append(rooms, gin.H{
+				"id":          roomName,
+				"name":        roomName,
+				"description": "",
+				"clients":     clientNames,
+				"count":       len(activeRoom),
+				"memberCount": 0,
+			})
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -45,52 +91,35 @@ func GetRoomMessages(c *gin.Context) {
 		return
 	}
 
-	// Read messages from persistence folder
-	folderPath := filepath.Join("persistence", roomName)
-	messages := make([]*models.Message, 0)
+	// Parse pagination parameters
+	limitStr := c.DefaultQuery("limit", "50")
+	offsetStr := c.DefaultQuery("offset", "0")
 
-	// Check if folder exists
-	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
-		c.JSON(http.StatusOK, gin.H{
-			"room":     roomName,
-			"messages": messages,
-		})
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		limit = 50
+	}
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		offset = 0
+	}
+
+	messageService := services.NewMessageService()
+	messages, err := messageService.GetRoomMessages(roomName, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch messages"})
 		return
 	}
 
-	// Read all message files in the room folder
-	err := filepath.Walk(folderPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// Skip directories and non-JSON files
-		if info.IsDir() || !strings.HasSuffix(info.Name(), ".json") {
-			return nil
-		}
-
-		// Read and parse message file
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		var message models.Message
-		if err := json.Unmarshal(data, &message); err != nil {
-			return err
-		}
-
-		messages = append(messages, &message)
-		return nil
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read messages"})
-		return
+	// Convert messages to response format
+	var messageResponses []interface{}
+	for _, msg := range messages {
+		messageResponses = append(messageResponses, msg.ToResponse())
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"room":     roomName,
-		"messages": messages,
+		"messages": messageResponses,
 	})
 }

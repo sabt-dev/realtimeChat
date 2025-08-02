@@ -11,6 +11,7 @@ import (
 
 	"github/sabt-dev/realtimeChat/middleware"
 	"github/sabt-dev/realtimeChat/models"
+	"github/sabt-dev/realtimeChat/services"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -25,7 +26,7 @@ var upgrader = websocket.Upgrader{
 // Hub maintains the set of active clients and broadcasts messages to the clients
 type Hub struct {
 	// Registered clients per room
-	rooms map[string]*models.Room
+	rooms map[string]map[string]*models.Client
 
 	// Register requests from the clients
 	register chan *models.Client
@@ -34,17 +35,17 @@ type Hub struct {
 	unregister chan *models.Client
 
 	// Inbound messages from the clients
-	broadcast chan *models.Message
+	broadcast chan *models.MessageResponse
 
 	// Mutex to protect concurrent access
 	mutex sync.RWMutex
 }
 
 var chatHub = &Hub{
-	rooms:      make(map[string]*models.Room),
+	rooms:      make(map[string]map[string]*models.Client),
 	register:   make(chan *models.Client),
 	unregister: make(chan *models.Client),
-	broadcast:  make(chan *models.Message),
+	broadcast:  make(chan *models.MessageResponse),
 }
 
 // StartHub runs the chat hub
@@ -73,39 +74,56 @@ func (h *Hub) registerClient(client *models.Client) {
 
 	// Create room if it doesn't exist
 	if _, exists := h.rooms[client.Room]; !exists {
-		h.rooms[client.Room] = &models.Room{
-			ID:      client.Room,
-			Name:    client.Room,
-			Clients: make(map[string]*models.Client),
-		}
+		h.rooms[client.Room] = make(map[string]*models.Client)
 	}
 
 	// Add client to room
-	h.rooms[client.Room].Clients[client.ID] = client
+	h.rooms[client.Room][client.ID] = client
 
-	log.Printf("Client %s (ID: %s) joined room %s", client.Name, client.ID, client.Room)
-	log.Printf("Room %s now has %d clients", client.Room, len(h.rooms[client.Room].Clients))
+	log.Printf("Client %s (ID: %s, UserID: %d) joined room %s", client.Name, client.ID, client.UserID, client.Room)
+	log.Printf("Room %s now has %d clients", client.Room, len(h.rooms[client.Room]))
 
-	// Send join message
-	joinMessage := &models.Message{
-		ID:        generateMessageID(),
-		Sender:    "System",
-		Avatar:    "", // System messages don't need avatars
-		Room:      client.Room,
-		Text:      fmt.Sprintf("%s joined the room", client.Name),
-		Timestamp: time.Now(),
-		Type:      "join",
+	// Create/get room and user in database
+	userService := services.NewUserService()
+	roomService := services.NewRoomService()
+	messageService := services.NewMessageService()
+
+	user, err := userService.GetUserByID(client.UserID)
+	if err != nil {
+		log.Printf("Error getting user %d: %v", client.UserID, err)
+		return
+	}
+
+	room, err := roomService.CreateOrGetRoom(client.Room)
+	if err != nil {
+		log.Printf("Error creating/getting room %s: %v", client.Room, err)
+		return
+	}
+
+	// Join room
+	if err := roomService.JoinRoom(user.ID, room.ID); err != nil {
+		log.Printf("Error joining room: %v", err)
+	}
+
+	// Create join message
+	joinMessage, err := messageService.CreateMessage(
+		user.ID,
+		room.ID,
+		fmt.Sprintf("%s joined the room", user.Name),
+		"join",
+		"", "", "",
+	)
+	if err != nil {
+		log.Printf("Error creating join message: %v", err)
+		return
 	}
 
 	log.Printf("Created join message: %+v", joinMessage)
 
-	// Persist join message and broadcast via channel to avoid deadlock
-	go PersistMessage(joinMessage)
-	log.Printf("About to broadcast join message to room %s via channel", client.Room)
-
-	// Use channel broadcast to avoid deadlock
+	// Broadcast join message
 	go func() {
-		chatHub.broadcast <- joinMessage
+		response := joinMessage.ToResponse()
+		chatHub.broadcast <- &response
 	}()
 }
 
@@ -114,8 +132,8 @@ func (h *Hub) unregisterClient(client *models.Client) {
 	defer h.mutex.Unlock()
 
 	if room, exists := h.rooms[client.Room]; exists {
-		if _, exists := room.Clients[client.ID]; exists {
-			delete(room.Clients, client.ID)
+		if _, exists := room[client.ID]; exists {
+			delete(room, client.ID)
 
 			// Close connection
 			if conn, ok := client.Conn.(*websocket.Conn); ok {
@@ -124,40 +142,58 @@ func (h *Hub) unregisterClient(client *models.Client) {
 
 			log.Printf("Client %s left room %s", client.Name, client.Room)
 
-			// Send leave message
-			leaveMessage := &models.Message{
-				ID:        generateMessageID(),
-				Sender:    "System",
-				Avatar:    "", // System messages don't need avatars
-				Room:      client.Room,
-				Text:      fmt.Sprintf("%s left the room", client.Name),
-				Timestamp: time.Now(),
-				Type:      "leave",
+			// Create leave message in database
+			userService := services.NewUserService()
+			roomService := services.NewRoomService()
+			messageService := services.NewMessageService()
+
+			user, err := userService.GetUserByID(client.UserID)
+			if err != nil {
+				log.Printf("Error getting user %d: %v", client.UserID, err)
+			} else {
+				dbRoom, err := roomService.GetRoomByName(client.Room)
+				if err != nil {
+					log.Printf("Error getting room %s: %v", client.Room, err)
+				} else {
+					// Leave room
+					if err := roomService.LeaveRoom(user.ID, dbRoom.ID); err != nil {
+						log.Printf("Error leaving room: %v", err)
+					}
+
+					// Create leave message
+					leaveMessage, err := messageService.CreateMessage(
+						user.ID,
+						dbRoom.ID,
+						fmt.Sprintf("%s left the room", user.Name),
+						"leave",
+						"", "", "",
+					)
+					if err != nil {
+						log.Printf("Error creating leave message: %v", err)
+					} else {
+						// Broadcast leave message
+						go func() {
+							response := leaveMessage.ToResponse()
+							chatHub.broadcast <- &response
+						}()
+					}
+				}
 			}
 
-			// Persist and broadcast leave message via channel to avoid deadlock
-			go PersistMessage(leaveMessage)
-			go func() {
-				chatHub.broadcast <- leaveMessage
-			}()
-
 			// Remove room if empty
-			if len(room.Clients) == 0 {
+			if len(room) == 0 {
 				delete(h.rooms, client.Room)
 			}
 		}
 	}
 }
 
-func (h *Hub) broadcastMessage(message *models.Message) {
-	// Persist message
-	go PersistMessage(message)
-
+func (h *Hub) broadcastMessage(message *models.MessageResponse) {
 	// Broadcast to room
 	h.broadcastToRoom(message.Room, message)
 }
 
-func (h *Hub) broadcastToRoom(roomID string, message *models.Message) {
+func (h *Hub) broadcastToRoom(roomID string, message *models.MessageResponse) {
 	log.Printf("ENTER broadcastToRoom: roomID=%s", roomID)
 
 	h.mutex.RLock()
@@ -177,8 +213,8 @@ func (h *Hub) broadcastToRoom(roomID string, message *models.Message) {
 			return
 		}
 
-		log.Printf("Room %s has %d clients", roomID, len(room.Clients))
-		for clientID, client := range room.Clients {
+		log.Printf("Room %s has %d clients", roomID, len(room))
+		for clientID, client := range room {
 			log.Printf("Processing client %s (%s) in room %s", clientID, client.Name, roomID)
 			if conn, ok := client.Conn.(*websocket.Conn); ok {
 				log.Printf("Sending message to client %s (%s)", clientID, client.Name)
@@ -254,11 +290,21 @@ func HandleWSConnection(c *gin.Context) {
 		return
 	}
 
+	// Create or get user in database
+	userService := services.NewUserService()
+	dbUser, err := userService.CreateOrGetUser(userName, user.Email, user.Avatar)
+	if err != nil {
+		log.Printf("Error creating/getting user: %v", err)
+		conn.Close()
+		return
+	}
+
 	// Use authenticated user's name instead of the one from the request
 	client := &models.Client{
 		ID:     generateClientID(),
+		UserID: dbUser.ID,
 		Name:   userName,
-		Avatar: user.Avatar, // Include user avatar
+		Avatar: user.Avatar,
 		Room:   joinReq.RoomName,
 		Conn:   conn,
 	}
@@ -293,7 +339,8 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 			msgType = "message"
 		}
 
-		var message *models.Message
+		messageService := services.NewMessageService()
+		roomService := services.NewRoomService()
 
 		switch msgType {
 		case "ping":
@@ -309,35 +356,29 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				continue
 			}
 
-			// Load the message to check ownership
-			if deleteMsg, err := LoadMessageFromFile(client.Room, messageID); err == nil && deleteMsg != nil {
-				// Only allow deletion if the user is the sender
-				if deleteMsg.Sender == client.Name {
-					// Delete the message from file
-					if err := DeleteMessageFromFile(client.Room, messageID); err != nil {
-						log.Printf("Failed to delete message %s: %v", messageID, err)
-						continue
-					}
-
-					// Create delete notification message
-					message = &models.Message{
-						ID:        messageID, // Use the same ID for deletion
-						Sender:    client.Name,
-						Avatar:    client.Avatar,
-						Room:      client.Room,
-						Text:      "",
-						Timestamp: time.Now(),
-						Type:      "delete",
-					}
-					log.Printf("Message %s deleted by %s", messageID, client.Name)
-				} else {
-					log.Printf("User %s attempted to delete message %s from %s", client.Name, messageID, deleteMsg.Sender)
-					continue
-				}
-			} else {
-				log.Printf("Message %s not found for deletion", messageID)
+			// Try to delete the message (this checks ownership too)
+			if err := messageService.DeleteMessage(messageID, client.UserID); err != nil {
+				log.Printf("Failed to delete message %s: %v", messageID, err)
 				continue
 			}
+
+			// Create delete notification message response
+			response := &models.MessageResponse{
+				ID:        messageID,
+				Sender:    client.Name,
+				Avatar:    client.Avatar,
+				Room:      client.Room,
+				Text:      "",
+				Timestamp: time.Now(),
+				Type:      "delete",
+			}
+
+			log.Printf("Message %s deleted by %s", messageID, client.Name)
+
+			// Broadcast delete notification
+			go func() {
+				chatHub.broadcast <- response
+			}()
 
 		case "media":
 			// Handle media message
@@ -351,19 +392,33 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				continue
 			}
 
-			// Create media message (can include text)
-			message = &models.Message{
-				ID:        generateMessageID(),
-				Sender:    client.Name,
-				Avatar:    client.Avatar,
-				Room:      client.Room,
-				Text:      text, // Allow text with media messages
-				Timestamp: time.Now(),
-				Type:      "media",
-				MediaURL:  mediaURL,
-				MediaType: mediaType,
-				FileName:  fileName,
+			// Get room
+			room, err := roomService.GetRoomByName(client.Room)
+			if err != nil {
+				log.Printf("Error getting room %s: %v", client.Room, err)
+				continue
 			}
+
+			// Create media message
+			message, err := messageService.CreateMessage(
+				client.UserID,
+				room.ID,
+				text, // Allow text with media messages
+				"media",
+				mediaURL,
+				mediaType,
+				fileName,
+			)
+			if err != nil {
+				log.Printf("Error creating media message: %v", err)
+				continue
+			}
+
+			// Broadcast message
+			go func() {
+				response := message.ToResponse()
+				chatHub.broadcast <- &response
+			}()
 
 		default:
 			// Handle regular text message
@@ -373,29 +428,37 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				continue
 			}
 
-			// Create regular message
-			message = &models.Message{
-				ID:        generateMessageID(),
-				Sender:    client.Name,
-				Avatar:    client.Avatar,
-				Room:      client.Room,
-				Text:      text,
-				Timestamp: time.Now(),
-				Type:      "message",
+			// Get room
+			room, err := roomService.GetRoomByName(client.Room)
+			if err != nil {
+				log.Printf("Error getting room %s: %v", client.Room, err)
+				continue
 			}
+
+			// Create regular message
+			message, err := messageService.CreateMessage(
+				client.UserID,
+				room.ID,
+				text,
+				"message",
+				"", "", "",
+			)
+			if err != nil {
+				log.Printf("Error creating message: %v", err)
+				continue
+			}
+
+			log.Printf("Processed message: %+v", message)
+
+			// Broadcast message
+			go func() {
+				response := message.ToResponse()
+				chatHub.broadcast <- &response
+			}()
 		}
-
-		log.Printf("Processed message: %+v", message)
-
-		// Broadcast message
-		chatHub.broadcast <- message
 	}
 }
 
 func generateClientID() string {
 	return fmt.Sprintf("client_%d", time.Now().UnixNano())
-}
-
-func generateMessageID() string {
-	return fmt.Sprintf("msg_%d", time.Now().UnixNano())
 }

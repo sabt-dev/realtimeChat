@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 
+	"github/sabt-dev/realtimeChat/database"
 	"github/sabt-dev/realtimeChat/handlers"
 	"github/sabt-dev/realtimeChat/middleware"
 
@@ -15,6 +16,11 @@ func main() {
 	err := godotenv.Load()
 	if err != nil {
 		log.Println("Warning: .env file not found, using default values")
+	}
+
+	// Initialize database
+	if err := database.InitDatabase(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
 	// Initialize authentication
