@@ -71,10 +71,10 @@ body::before {
     border-radius: var(--border-radius-lg);
     box-shadow: var(--shadow-xl);
     width: 100%;
-    max-width: 1400px;
-    height: 90vh;
-    max-height: 800px;
-    min-height: 600px;
+    max-width: 2000px;
+    height: 95vh;
+    max-height: 1200px;
+    min-height: 700px;
     display: flex;
     overflow: hidden;
     backdrop-filter: blur(20px);

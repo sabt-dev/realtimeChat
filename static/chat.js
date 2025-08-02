@@ -1011,7 +1011,7 @@ function handlePaste(event) {
     debugLog('Paste event detected');
     
     // Get clipboard data
-    const clipboardData = event.clipboardData || window.clipboardData;
+    const clipboardData = event.clipboardData || window.Clipboard;
     if (!clipboardData) {
         debugLog('No clipboard data available');
         return;
