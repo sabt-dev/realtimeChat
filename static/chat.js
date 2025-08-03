@@ -374,9 +374,11 @@ function createNewWebSocket(wsUrl) {
             const message = JSON.parse(event.data);
             debugLog(`Parsed message: ${JSON.stringify(message)}`);
             
-            // Handle delete messages
+            // Handle different message types
             if (message.type === 'delete') {
                 handleMessageDeletion(message.id);
+            } else if (message.type === 'reaction_update') {
+                updateMessageReactions(message);
             } else {
                 displayMessage(message);
             }
@@ -599,6 +601,13 @@ function displayMessage(message, isFromHistory = false) {
                 </div>
                 <div class="reply-reference-content">${escapeHtml(message.replyTo.text || 'Media message')}</div>
             </div>` : '';
+
+        // Create reactions display
+        const reactionsHtml = createReactionsHtml(message.reactions || [], message.id);
+
+        // Create emoji picker button (only for non-system messages)
+        const emojiButtonHtml = (message.type !== 'join' && message.type !== 'leave') ? 
+            `<button class="message-emoji-btn" onclick="toggleEmojiPicker('${escapeHtml(message.id)}')" title="Add reaction">😀</button>` : '';
         
         if (isOwnMessage) {
             messageEl.innerHTML = `
@@ -608,8 +617,10 @@ function displayMessage(message, isFromHistory = false) {
                     ${replyReferenceHtml}
                     ${textHtml}
                     ${mediaHtml}
+                    ${reactionsHtml}
                 </div>
                 ${replyButtonHtml}
+                ${emojiButtonHtml}
                 ${deleteButtonHtml}
             `;
         } else {
@@ -620,8 +631,10 @@ function displayMessage(message, isFromHistory = false) {
                     ${replyReferenceHtml}
                     ${textHtml}
                     ${mediaHtml}
+                    ${reactionsHtml}
                 </div>
                 ${replyButtonHtml}
+                ${emojiButtonHtml}
             `;
         }
         
@@ -664,6 +677,13 @@ function displayMessage(message, isFromHistory = false) {
                 </div>
                 <div class="reply-reference-content">${escapeHtml(message.replyTo.text || 'Media message')}</div>
             </div>` : '';
+
+        // Create reactions display
+        const reactionsHtml = createReactionsHtml(message.reactions || [], message.id);
+
+        // Create emoji picker button (only for non-system messages)
+        const emojiButtonHtml = (message.type !== 'join' && message.type !== 'leave') ? 
+            `<button class="message-emoji-btn" onclick="toggleEmojiPicker('${escapeHtml(message.id)}')" title="Add reaction">😀</button>` : '';
         
         if (isOwnMessage) {
             messageEl.innerHTML = `
@@ -672,8 +692,10 @@ function displayMessage(message, isFromHistory = false) {
                     <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
                     ${replyReferenceHtml}
                     <div>${processLinksInText(escapeHtml(message.text))}</div>
+                    ${reactionsHtml}
                 </div>
                 ${replyButtonHtml}
+                ${emojiButtonHtml}
                 ${deleteButtonHtml}
             `;
         } else {
@@ -683,8 +705,10 @@ function displayMessage(message, isFromHistory = false) {
                     <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
                     ${replyReferenceHtml}
                     <div>${processLinksInText(escapeHtml(message.text))}</div>
+                    ${reactionsHtml}
                 </div>
                 ${replyButtonHtml}
+                ${emojiButtonHtml}
             `;
         }
         
@@ -1855,6 +1879,158 @@ function scrollToMessage(messageId) {
 
 // Load active rooms every 5 seconds
 setInterval(loadActiveRooms, 5000); // i will change it based on user feedback
+
+// ===== REACTION FUNCTIONS =====
+
+// Create reactions HTML from reactions array
+function createReactionsHtml(reactions, messageId) {
+    if (!reactions || reactions.length === 0) {
+        return '';
+    }
+
+    let reactionsHtml = '<div class="message-reactions">';
+    reactions.forEach(reaction => {
+        const isUserReaction = currentUser && reaction.userID && reaction.userID.includes(currentUser.id);
+        const userList = reaction.users ? reaction.users.join(', ') : '';
+        
+        reactionsHtml += `
+            <button class="reaction-btn ${isUserReaction ? 'user-reacted' : ''}" 
+                    onclick="toggleReaction('${escapeHtml(messageId)}', '${escapeHtml(reaction.emoji)}')"
+                    title="${escapeHtml(userList)} reacted with ${escapeHtml(reaction.emoji)}">
+                <span class="reaction-emoji">${escapeHtml(reaction.emoji)}</span>
+                <span class="reaction-count">${reaction.count}</span>
+            </button>
+        `;
+    });
+    reactionsHtml += '</div>';
+    
+    return reactionsHtml;
+}
+
+// Popular emojis for quick access
+const popularEmojis = ['👍', '❤️', '😂', '😮', '😢', '😡', '🎉', '🔥', '👏', '💯'];
+
+// Toggle emoji picker
+function toggleEmojiPicker(messageId) {
+    // Remove any existing emoji picker
+    const existingPicker = document.querySelector('.emoji-picker');
+    if (existingPicker) {
+        existingPicker.remove();
+    }
+
+    // Find the message element
+    const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+    if (!messageElement) {
+        console.error('Message element not found for ID:', messageId);
+        return;
+    }
+
+    // Create emoji picker
+    const emojiPicker = document.createElement('div');
+    emojiPicker.className = 'emoji-picker';
+    emojiPicker.innerHTML = `
+        <div class="emoji-picker-content">
+            <div class="emoji-picker-header">Add Reaction</div>
+            <div class="emoji-grid">
+                ${popularEmojis.map(emoji => 
+                    `<button class="emoji-option" onclick="addReaction('${escapeHtml(messageId)}', '${emoji}'); closeEmojiPicker()">${emoji}</button>`
+                ).join('')}
+            </div>
+            <button class="emoji-picker-close" onclick="closeEmojiPicker()">×</button>
+        </div>
+    `;
+
+    // Position the picker
+    const emojiBtn = messageElement.querySelector('.message-emoji-btn');
+    if (emojiBtn) {
+        const rect = emojiBtn.getBoundingClientRect();
+        emojiPicker.style.position = 'fixed';
+        emojiPicker.style.top = `${rect.bottom + 5}px`;
+        emojiPicker.style.left = `${rect.left - 100}px`; // Center it roughly
+        emojiPicker.style.zIndex = '1000';
+    }
+
+    document.body.appendChild(emojiPicker);
+
+    // Close picker when clicking outside
+    setTimeout(() => {
+        document.addEventListener('click', closeEmojiPickerOnOutsideClick);
+    }, 100);
+}
+
+// Close emoji picker
+function closeEmojiPicker() {
+    const picker = document.querySelector('.emoji-picker');
+    if (picker) {
+        picker.remove();
+    }
+    document.removeEventListener('click', closeEmojiPickerOnOutsideClick);
+}
+
+// Close emoji picker when clicking outside
+function closeEmojiPickerOnOutsideClick(event) {
+    const picker = document.querySelector('.emoji-picker');
+    const emojiBtn = event.target.closest('.message-emoji-btn');
+    
+    if (picker && !picker.contains(event.target) && !emojiBtn) {
+        closeEmojiPicker();
+    }
+}
+
+// Add reaction to a message
+function addReaction(messageId, emoji) {
+    if (!ws || !isConnected) {
+        console.error('WebSocket not connected');
+        return;
+    }
+
+    const reactionData = {
+        type: 'reaction',
+        messageId: messageId,
+        emoji: emoji,
+        action: 'toggle' // Toggle will add if not exists, remove if exists
+    };
+
+    ws.send(JSON.stringify(reactionData));
+    debugLog(`Sent reaction: ${emoji} for message ${messageId}`);
+}
+
+// Toggle reaction (same as add, but explicit function name)
+function toggleReaction(messageId, emoji) {
+    addReaction(messageId, emoji);
+}
+
+// Update message with new reaction data
+function updateMessageReactions(messageData) {
+    const messageElement = document.querySelector(`[data-message-id="${messageData.id}"]`);
+    if (!messageElement) {
+        console.error('Message element not found for reaction update:', messageData.id);
+        return;
+    }
+
+    // Find and update the reactions container
+    const reactionsContainer = messageElement.querySelector('.message-reactions');
+    const newReactionsHtml = createReactionsHtml(messageData.reactions || [], messageData.id);
+    
+    if (reactionsContainer) {
+        // Replace existing reactions
+        if (newReactionsHtml) {
+            reactionsContainer.outerHTML = newReactionsHtml;
+        } else {
+            reactionsContainer.remove();
+        }
+    } else {
+        // Add new reactions if none existed
+        if (newReactionsHtml) {
+            const messageContent = messageElement.querySelector('.message-content');
+            if (messageContent) {
+                messageContent.insertAdjacentHTML('beforeend', newReactionsHtml);
+            }
+        }
+    }
+
+    debugLog(`Updated reactions for message ${messageData.id}`);
+}
 
 // Initialize debug log
 debugLog('Chat application initialized');

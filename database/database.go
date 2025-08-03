@@ -41,9 +41,16 @@ func InitDatabase() error {
 		&models.User{},
 		&models.Message{},
 		&models.RoomMember{},
+		&models.MessageReaction{},
 	)
 	if err != nil {
 		return err
+	}
+
+	// Add unique index for message reactions (one emoji per user per message)
+	err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_message_reactions_unique ON message_reactions(message_id, user_id, emoji)").Error
+	if err != nil {
+		log.Printf("Warning: Failed to create unique index for message reactions: %v", err)
 	}
 
 	log.Println("Database initialized and migrated successfully")

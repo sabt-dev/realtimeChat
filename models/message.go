@@ -55,9 +55,29 @@ type Message struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// Relationships
-	Sender  User     `gorm:"foreignKey:SenderID" json:"sender"`
-	Room    Room     `gorm:"foreignKey:RoomID" json:"room"`
-	ReplyTo *Message `gorm:"foreignKey:ReplyToID" json:"reply_to,omitempty"`
+	Sender    User              `gorm:"foreignKey:SenderID" json:"sender"`
+	Room      Room              `gorm:"foreignKey:RoomID" json:"room"`
+	ReplyTo   *Message          `gorm:"foreignKey:ReplyToID" json:"reply_to,omitempty"`
+	Reactions []MessageReaction `gorm:"foreignKey:MessageID" json:"reactions"`
+}
+
+// MessageReaction represents a reaction to a message
+type MessageReaction struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	MessageID uint      `gorm:"not null" json:"message_id"`
+	UserID    uint      `gorm:"not null" json:"user_id"`
+	Emoji     string    `gorm:"not null" json:"emoji"` // The emoji used for reaction
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// Relationships
+	Message Message `gorm:"foreignKey:MessageID" json:"message"`
+	User    User    `gorm:"foreignKey:UserID" json:"user"`
+}
+
+// Ensure unique constraint for user-message-emoji combination
+func (MessageReaction) TableName() string {
+	return "message_reactions"
 }
 
 // RoomMember represents the many-to-many relationship between users and rooms
@@ -96,20 +116,29 @@ type ReplyInfo struct {
 	Text   string `json:"text"`
 }
 
+// ReactionSummary represents aggregated reaction data for a message
+type ReactionSummary struct {
+	Emoji  string   `json:"emoji"`
+	Count  int      `json:"count"`
+	Users  []string `json:"users"`   // User names who reacted
+	UserID []uint   `json:"userIds"` // User IDs for backend logic
+}
+
 // MessageResponse represents a message response for JSON serialization
 type MessageResponse struct {
-	ID        string     `json:"id"`     // UUID for client compatibility
-	Sender    string     `json:"sender"` // Sender name
-	Avatar    string     `json:"avatar,omitempty"`
-	Receiver  string     `json:"receiver,omitempty"`
-	Room      string     `json:"room"` // Room name
-	Text      string     `json:"text"`
-	Timestamp time.Time  `json:"timestamp"`
-	Type      string     `json:"type"`
-	MediaURL  string     `json:"mediaUrl,omitempty"`
-	MediaType string     `json:"mediaType,omitempty"`
-	FileName  string     `json:"fileName,omitempty"`
-	ReplyTo   *ReplyInfo `json:"replyTo,omitempty"`
+	ID        string            `json:"id"`     // UUID for client compatibility
+	Sender    string            `json:"sender"` // Sender name
+	Avatar    string            `json:"avatar,omitempty"`
+	Receiver  string            `json:"receiver,omitempty"`
+	Room      string            `json:"room"` // Room name
+	Text      string            `json:"text"`
+	Timestamp time.Time         `json:"timestamp"`
+	Type      string            `json:"type"`
+	MediaURL  string            `json:"mediaUrl,omitempty"`
+	MediaType string            `json:"mediaType,omitempty"`
+	FileName  string            `json:"fileName,omitempty"`
+	ReplyTo   *ReplyInfo        `json:"replyTo,omitempty"`
+	Reactions []ReactionSummary `json:"reactions,omitempty"`
 }
 
 // ToResponse converts a Message to MessageResponse for JSON output
@@ -143,6 +172,29 @@ func (m *Message) ToResponse() MessageResponse {
 		}
 	}
 
+	// Process reactions into summary format
+	reactionMap := make(map[string]*ReactionSummary)
+	for _, reaction := range m.Reactions {
+		if summary, exists := reactionMap[reaction.Emoji]; exists {
+			summary.Count++
+			summary.Users = append(summary.Users, reaction.User.Name)
+			summary.UserID = append(summary.UserID, reaction.UserID)
+		} else {
+			reactionMap[reaction.Emoji] = &ReactionSummary{
+				Emoji:  reaction.Emoji,
+				Count:  1,
+				Users:  []string{reaction.User.Name},
+				UserID: []uint{reaction.UserID},
+			}
+		}
+	}
+
+	// Convert map to slice
+	var reactions []ReactionSummary
+	for _, summary := range reactionMap {
+		reactions = append(reactions, *summary)
+	}
+
 	return MessageResponse{
 		ID:        m.UUID,
 		Sender:    senderName,
@@ -155,5 +207,6 @@ func (m *Message) ToResponse() MessageResponse {
 		MediaType: m.MediaType,
 		FileName:  m.FileName,
 		ReplyTo:   replyInfo,
+		Reactions: reactions,
 	}
 }

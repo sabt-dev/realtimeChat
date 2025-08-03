@@ -441,6 +441,54 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				chatHub.broadcast <- &response
 			}()
 
+		case "reaction":
+			// Handle message reactions
+			messageID, ok := messageData["messageId"].(string)
+			if !ok || messageID == "" {
+				log.Printf("Invalid reaction request from %s: missing messageId", client.Name)
+				continue
+			}
+
+			emoji, ok := messageData["emoji"].(string)
+			if !ok || emoji == "" {
+				log.Printf("Invalid reaction request from %s: missing emoji", client.Name)
+				continue
+			}
+
+			action, ok := messageData["action"].(string)
+			if !ok {
+				action = "toggle" // Default action
+			}
+
+			var updatedMessage *models.Message
+			var err error
+
+			switch action {
+			case "add":
+				updatedMessage, err = messageService.AddReaction(messageID, client.UserID, emoji)
+			case "remove":
+				updatedMessage, err = messageService.RemoveReaction(messageID, client.UserID, emoji)
+			case "toggle":
+				updatedMessage, err = messageService.ToggleReaction(messageID, client.UserID, emoji)
+			default:
+				log.Printf("Invalid reaction action from %s: %s", client.Name, action)
+				continue
+			}
+
+			if err != nil {
+				log.Printf("Error handling reaction: %v", err)
+				continue
+			}
+
+			log.Printf("Reaction %s %s for message %s by %s", emoji, action, messageID, client.Name)
+
+			// Broadcast updated message with reactions
+			go func() {
+				response := updatedMessage.ToResponse()
+				response.Type = "reaction_update" // Special type to indicate reaction update
+				chatHub.broadcast <- &response
+			}()
+
 		default:
 			// Handle regular text message
 			text, ok := messageData["text"].(string)

@@ -196,7 +196,9 @@ func (s *MessageService) CreateMessage(senderID, roomID uint, text, msgType, med
 // GetMessageByUUID gets a message by UUID with associations
 func (s *MessageService) GetMessageByUUID(uuid string) (*models.Message, error) {
 	var message models.Message
-	if err := s.db.Preload("Sender").Preload("Room").Preload("ReplyTo").Where("uuid = ?", uuid).First(&message).Error; err != nil {
+	if err := s.db.Preload("Sender").Preload("Room").Preload("ReplyTo").
+		Preload("Reactions").Preload("Reactions.User").
+		Where("uuid = ?", uuid).First(&message).Error; err != nil {
 		return nil, err
 	}
 	return &message, nil
@@ -207,6 +209,7 @@ func (s *MessageService) GetRoomMessages(roomName string, limit, offset int) ([]
 	var messages []models.Message
 
 	if err := s.db.Preload("Sender").Preload("Room").Preload("ReplyTo").
+		Preload("Reactions").Preload("Reactions.User").
 		Joins("JOIN rooms ON messages.room_id = rooms.id").
 		Where("rooms.name = ?", roomName).
 		Order("messages.created_at ASC").
@@ -288,4 +291,74 @@ func (s *MessageService) GetMessageForDeletion(uuid string, userID uint) (*model
 		return nil, err
 	}
 	return &message, nil
+}
+
+// AddReaction adds or updates a reaction to a message
+func (s *MessageService) AddReaction(messageUUID string, userID uint, emoji string) (*models.Message, error) {
+	// First get the message ID
+	messageID, err := s.GetMessageIDByUUID(messageUUID)
+	if err != nil {
+		return nil, fmt.Errorf("message not found: %w", err)
+	}
+
+	// Check if user already reacted to this message with this emoji
+	var existingReaction models.MessageReaction
+	result := s.db.Where("message_id = ? AND user_id = ? AND emoji = ?", messageID, userID, emoji).First(&existingReaction)
+
+	if result.Error == nil {
+		// Reaction already exists, do nothing (or could update timestamp)
+		return s.GetMessageByUUID(messageUUID)
+	}
+
+	// Create new reaction
+	reaction := models.MessageReaction{
+		MessageID: messageID,
+		UserID:    userID,
+		Emoji:     emoji,
+	}
+
+	if err := s.db.Create(&reaction).Error; err != nil {
+		return nil, fmt.Errorf("failed to create reaction: %w", err)
+	}
+
+	// Return updated message with reactions
+	return s.GetMessageByUUID(messageUUID)
+}
+
+// RemoveReaction removes a reaction from a message
+func (s *MessageService) RemoveReaction(messageUUID string, userID uint, emoji string) (*models.Message, error) {
+	// First get the message ID
+	messageID, err := s.GetMessageIDByUUID(messageUUID)
+	if err != nil {
+		return nil, fmt.Errorf("message not found: %w", err)
+	}
+
+	// Delete the reaction
+	if err := s.db.Where("message_id = ? AND user_id = ? AND emoji = ?", messageID, userID, emoji).Delete(&models.MessageReaction{}).Error; err != nil {
+		return nil, fmt.Errorf("failed to remove reaction: %w", err)
+	}
+
+	// Return updated message with reactions
+	return s.GetMessageByUUID(messageUUID)
+}
+
+// ToggleReaction toggles a reaction (add if not exists, remove if exists)
+func (s *MessageService) ToggleReaction(messageUUID string, userID uint, emoji string) (*models.Message, error) {
+	// First get the message ID
+	messageID, err := s.GetMessageIDByUUID(messageUUID)
+	if err != nil {
+		return nil, fmt.Errorf("message not found: %w", err)
+	}
+
+	// Check if reaction exists
+	var existingReaction models.MessageReaction
+	result := s.db.Where("message_id = ? AND user_id = ? AND emoji = ?", messageID, userID, emoji).First(&existingReaction)
+
+	if result.Error == nil {
+		// Reaction exists, remove it
+		return s.RemoveReaction(messageUUID, userID, emoji)
+	} else {
+		// Reaction doesn't exist, add it
+		return s.AddReaction(messageUUID, userID, emoji)
+	}
 }

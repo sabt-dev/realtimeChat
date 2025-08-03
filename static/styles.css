@@ -846,7 +846,7 @@ body::before {
 
 .messages {
     flex: 1;
-    padding: 2rem 4rem 0 4rem;
+    padding: 2rem 2rem 0 2rem;
     overflow-y: auto;
     overflow-x: hidden;
     background: var(--dark-bg);
@@ -874,7 +874,7 @@ body::before {
 
 @media (max-width: 768px) {
     .messages {
-        padding: 1.25rem 2.5rem;
+        padding: 1.25rem 1.5rem;
         gap: 1rem;
         background: var(--dark-bg);
         flex: 1;
@@ -1018,30 +1018,30 @@ body::before {
     opacity: 0;
 }
 
-/* Message row hover effect */
-.message:hover {
-    background: rgba(255, 255, 255, 0.02);
-    box-shadow: 
-        0 6px 20px rgba(0, 0, 0, 0.15), 
-        0 3px 6px rgba(0, 0, 0, 0.08),
-        0 0 0 1px rgba(99, 102, 241, 0.1);
-    transform: translateY(-1px);
+/* Create extended hover zone that spans full container width */
+.message::before {
+    content: '';
+    position: absolute;
+    top: -0.5rem;     /* Extend slightly above the message */
+    bottom: -0.5rem;  /* Extend slightly below the message */
+    left: -100rem;    /* Extend well beyond container bounds */
+    right: -100rem;   /* Extend well beyond container bounds */
+    z-index: -1;
+    border-radius: 0;  /* Remove border radius for full width effect */
+    transition: background-color 0.2s ease;
 }
 
-/* Enhanced hover effects for different message types */
-.message.own:hover {
-    box-shadow: 
-        0 6px 20px rgba(99, 102, 241, 0.2), 
-        0 3px 6px rgba(99, 102, 241, 0.1),
-        0 0 0 1px rgba(99, 102, 241, 0.2);
+/* Row hover effect - highlight the full width area */
+.message:hover::before {
+    background: rgba(99, 102, 241, 0.12);
 }
 
-.message.other:hover {
-    background: rgba(255, 255, 255, 0.03);
-    box-shadow: 
-        0 6px 20px rgba(0, 0, 0, 0.15), 
-        0 3px 6px rgba(0, 0, 0, 0.08),
-        0 0 0 1px rgba(255, 255, 255, 0.1);
+.message.own:hover::before {
+    background: rgba(99, 102, 241, 0.15);
+}
+
+.message.other:hover::before {
+    background: rgba(255, 255, 255, 0.08);
 }
 
 /* Override animations for history messages */
@@ -3425,6 +3425,231 @@ body::before {
     
     .reply-preview-message {
         max-height: 50px;
+    }
+}
+
+/* ===== MESSAGE REACTIONS STYLES ===== */
+
+/* Emoji button for adding reactions */
+.message-emoji-btn {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--secondary-color);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: all 0.3s ease;
+    opacity: 0;
+    visibility: hidden;
+    z-index: 10;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
+}
+
+/* Position emoji button for own messages */
+.message.own .message-emoji-btn {
+    left: -6rem;
+}
+
+/* Position emoji button for other messages */
+.message.other .message-emoji-btn {
+    right: -6rem;
+}
+
+.message:hover .message-emoji-btn {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(-50%) scale(1);
+}
+
+.message-emoji-btn:hover {
+    background: var(--accent-color);
+    transform: translateY(-50%) scale(1.1);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+}
+
+/* Reactions container */
+.message-reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+    align-items: center;
+}
+
+/* Individual reaction button */
+.reaction-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: 1rem;
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 0.875rem;
+    min-height: 1.5rem;
+}
+
+.reaction-btn:hover {
+    background: var(--surface-3);
+    border-color: var(--primary-color);
+    transform: translateY(-1px);
+}
+
+.reaction-btn.user-reacted {
+    background: rgba(99, 102, 241, 0.2);
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.reaction-btn.user-reacted:hover {
+    background: rgba(99, 102, 241, 0.3);
+}
+
+.reaction-emoji {
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.reaction-count {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    min-width: 0.75rem;
+    text-align: center;
+}
+
+.reaction-btn.user-reacted .reaction-count {
+    color: var(--primary-color);
+}
+
+/* Emoji picker */
+.emoji-picker {
+    background: var(--surface-1);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow-xl);
+    backdrop-filter: blur(20px);
+    min-width: 200px;
+    max-width: 250px;
+    z-index: 1000;
+}
+
+.emoji-picker-content {
+    padding: 1rem;
+    position: relative;
+}
+
+.emoji-picker-header {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.75rem;
+    text-align: center;
+}
+
+.emoji-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.5rem;
+}
+
+.emoji-option {
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    padding: 0.5rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 1;
+}
+
+.emoji-option:hover {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    transform: scale(1.1);
+}
+
+.emoji-picker-close {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 1.25rem;
+    width: 1.5rem;
+    height: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: all 0.2s ease;
+}
+
+.emoji-picker-close:hover {
+    background: var(--surface-2);
+    color: var(--text-primary);
+}
+
+/* Mobile styles for reactions */
+@media (max-width: 768px) {
+    /* Hover zone already spans full width, no need to adjust */
+    
+    .message-emoji-btn {
+        width: 24px;
+        height: 24px;
+        font-size: 10px;
+    }
+    
+    .message.own .message-emoji-btn {
+        left: -4rem;
+    }
+    
+    .message.other .message-emoji-btn {
+        right: -4rem;
+    }
+    
+    .reaction-btn {
+        font-size: 0.8rem;
+        padding: 0.2rem 0.4rem;
+    }
+    
+    .reaction-emoji {
+        font-size: 0.9rem;
+    }
+    
+    .reaction-count {
+        font-size: 0.7rem;
+    }
+    
+    .emoji-picker {
+        min-width: 180px;
+        max-width: 200px;
+    }
+    
+    .emoji-grid {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.4rem;
+    }
+    
+    .emoji-option {
+        font-size: 1.1rem;
+        padding: 0.4rem;
     }
 }
 
