@@ -230,7 +230,7 @@ func (s *MessageService) GetMessageIDByUUID(uuid string) (uint, error) {
 	return message.ID, nil
 }
 
-// DeleteMessage soft deletes a message (only if user is the sender)
+// DeleteMessage permanently deletes a message from the database (only if user is the sender)
 func (s *MessageService) DeleteMessage(uuid string, userID uint) error {
 	var message models.Message
 
@@ -247,8 +247,23 @@ func (s *MessageService) DeleteMessage(uuid string, userID uint) error {
 		}
 	}
 
-	// Soft delete the message
-	return s.db.Delete(&message).Error
+	// Handle messages that reply to this message - set their reply_to_id to NULL
+	if err := s.db.Model(&models.Message{}).Where("reply_to_id = ?", message.ID).Update("reply_to_id", nil).Error; err != nil {
+		return fmt.Errorf("failed to update reply references: %w", err)
+	}
+
+	// Delete all reactions associated with this message
+	if err := s.db.Where("message_id = ?", message.ID).Delete(&models.MessageReaction{}).Error; err != nil {
+		return fmt.Errorf("failed to delete message reactions: %w", err)
+	}
+
+	// Hard delete the message from the database (permanently remove)
+	if err := s.db.Unscoped().Delete(&message).Error; err != nil {
+		return fmt.Errorf("failed to delete message: %w", err)
+	}
+
+	fmt.Printf("Successfully deleted message %s and its associated data\n", uuid)
+	return nil
 }
 
 // deleteMediaFile removes the physical file from the uploads directory

@@ -19,7 +19,8 @@ A modern, real-time chat application built with Go and WebSockets, featuring OAu
 - **Message History**: Persistent chat history with room-specific storage using GORM
 - **Live User Count**: See active users in each room
 - **Auto-reconnection**: Automatic reconnection on connection loss with exponential backoff
-- **Message Management**: Delete your own messages with confirmation
+- **Message Management**: Delete your own messages with confirmation and database cleanup
+- **Message Reactions**: React to messages with emojis and see real-time reaction updates
 - **Smart Scrolling**: Enhanced auto-scrolling with manual override detection
 
 ### 📱 Media Sharing
@@ -114,7 +115,8 @@ realtimeChat/
 ├── .gitignore                 # Git ignore rules
 ├── LICENSE                    # MIT License
 ├── README.md                  # Project documentation
-├── database/                  # Database configuration and setup
+├── database/                  # Database configuration and setup folder
+│   └── database.go            # Database connector and migrations
 ├── handlers/                  # HTTP and WebSocket handlers
 │   ├── api.go                 # REST API endpoints
 │   ├── fileUpload.go          # File upload handlers with validation
@@ -159,11 +161,6 @@ realtimeChat/
 | `GOOGLE_CLIENT_SECRET` | Google OAuth App Client Secret | Yes |
 | `SESSION_SECRET` | Secret key for session encryption | Yes |
 | `PORT` | Server port (default: 8080) | No |
-| `DB_HOST` | Database host (default: localhost) | No |
-| `DB_PORT` | Database port (default: 5432) | No |
-| `DB_NAME` | Database name (default: realtimechat) | No |
-| `DB_USER` | Database user (default: postgres) | No |
-| `DB_PASSWORD` | Database password | No |
 
 ## 🗃️ Database Integration
 
@@ -209,23 +206,43 @@ type Message struct {
     MediaURL  string
     MediaType string
     FileName  string
+    ReplyToID     *uint  `json:"reply_to_id,omitempty"`
+    ReplyToSender string `json:"reply_to_sender,omitempty"`
+    ReplyToText   string `json:"reply_to_text,omitempty"`
     CreatedAt time.Time
     UpdatedAt time.Time
     DeletedAt gorm.DeletedAt `gorm:"index"`
-    Sender User `gorm:"foreignKey:SenderID"`
-    Room   Room `gorm:"foreignKey:RoomID"`
+    Sender    User              `gorm:"foreignKey:SenderID"`
+    Room      Room              `gorm:"foreignKey:RoomID"`
+    ReplyTo   *Message          `gorm:"foreignKey:ReplyToID"`
+    Reactions []MessageReaction `gorm:"foreignKey:MessageID"`
+}
+```
+
+#### MessageReaction Model
+```go
+type MessageReaction struct {
+    ID        uint      `gorm:"primaryKey"`
+    MessageID uint      `gorm:"not null"`
+    UserID    uint      `gorm:"not null"`
+    Emoji     string    `gorm:"not null"`
+    CreatedAt time.Time
+    UpdatedAt time.Time
+    Message   Message `gorm:"foreignKey:MessageID;constraint:OnDelete:CASCADE"`
+    User      User    `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
 }
 ```
 
 ### Database Services
 - **UserService**: Handles user creation, authentication, and profile management
 - **RoomService**: Manages chat rooms and user memberships
-- **MessageService**: Handles message CRUD operations with media file cleanup
+- **MessageService**: Handles message CRUD operations with media file cleanup and reaction management
 
 ### Features
-- **Soft Deletes**: Messages are soft-deleted, maintaining data integrity
+- **Hard Deletes**: Messages are permanently deleted from the database for complete removal
+- **Reaction System**: Real-time emoji reactions with user tracking and unique constraints
 - **Automatic Migrations**: Database schema automatically created and updated
-- **Foreign Key Relationships**: Proper relational data modeling
+- **Foreign Key Relationships**: Proper relational data modeling with cascade deletes
 - **File Cleanup**: Orphaned media files automatically removed when messages are deleted
 
 ## 📡 API Endpoints
@@ -291,6 +308,14 @@ type Message struct {
   "messageId": "uuid"
 }
 
+// Add/remove message reaction
+{
+  "type": "reaction",
+  "messageId": "uuid",
+  "emoji": "👍",
+  "action": "toggle" // or "add" or "remove"
+}
+
 // Heartbeat ping (connection monitoring)
 {
   "type": "ping"
@@ -335,6 +360,20 @@ type Message struct {
   "id": "uuid",
   "sender": "user123",
   "timestamp": "2025-01-01T12:00:00Z"
+}
+
+// Reaction update notification
+{
+  "type": "reaction_update",
+  "id": "uuid",
+  "reactions": [
+    {
+      "emoji": "👍",
+      "count": 3,
+      "users": ["user1", "user2", "user3"],
+      "userHasReacted": true
+    }
+  ]
 }
 ```
 
@@ -458,7 +497,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🔮 Future Enhancements
 
 ### 🎯 Planned Features
-- [ ] Message reactions and emojis
 - [ ] Private messaging between users
 - [ ] Voice and video calls integration
 - [ ] Advanced message search functionality
@@ -487,7 +525,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [ ] Dark/light theme toggle
 
 ### ✅ Recently Implemented
-- [x] Message deletion with file cleanup
+- [x] Message reactions and emojis with real-time updates
+- [x] Message deletion with file cleanup and database hard delete
 - [x] Enhanced auto-scrolling with media detection
 - [x] URL media preview and embedding
 - [x] Advanced connection management
