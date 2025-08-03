@@ -491,11 +491,26 @@ function sendMessage() {
         text: text,
         type: 'message'
     };
+    
+    // Add reply information if replying to a message
+    if (currentReply) {
+        message.replyTo = {
+            id: currentReply.id,
+            sender: currentReply.sender,
+            text: currentReply.text
+        };
+        debugLog(`Including reply to message ${currentReply.id}`);
+    }
 
     debugLog(`Sending message: ${JSON.stringify(message)}`);
     try {
         ws.send(JSON.stringify(message));
         messageInput.value = '';
+        
+        // Clear reply state after sending
+        if (currentReply) {
+            cancelReply();
+        }
         
         // Force scroll to bottom when user sends a message
         isUserScrolledUp = false; // Reset scroll state
@@ -571,14 +586,30 @@ function displayMessage(message, isFromHistory = false) {
         const deleteButtonHtml = isOwnMessage ? 
             `<button class="message-delete-btn" onclick="deleteMessage('${escapeHtml(message.id)}')" title="Delete message">×</button>` : '';
         
+        // Create reply button for all messages (except system messages)
+        const replyButtonHtml = (message.type !== 'join' && message.type !== 'leave') ? 
+            `<button class="message-reply-btn" onclick="replyToMessage('${escapeHtml(message.id)}', '${escapeHtml(message.sender)}', '${escapeHtml(message.text || 'Media message')}')" title="Reply to message">↩</button>` : '';
+        
+        // Create reply reference if this message is a reply
+        const replyReferenceHtml = message.replyTo ? 
+            `<div class="message-reply-reference" onclick="scrollToMessage('${escapeHtml(message.replyTo.id)}')">
+                <div class="reply-reference-header">
+                    <span class="reply-icon">↩</span>
+                    <span class="reply-reference-sender">${escapeHtml(message.replyTo.sender)}</span>
+                </div>
+                <div class="reply-reference-content">${escapeHtml(message.replyTo.text || 'Media message')}</div>
+            </div>` : '';
+        
         if (isOwnMessage) {
             messageEl.innerHTML = `
                 ${avatarHtml}
                 <div class="message-content">
                     <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
+                    ${replyReferenceHtml}
                     ${textHtml}
                     ${mediaHtml}
                 </div>
+                ${replyButtonHtml}
                 ${deleteButtonHtml}
             `;
         } else {
@@ -586,9 +617,11 @@ function displayMessage(message, isFromHistory = false) {
                 ${avatarHtml}
                 <div class="message-content">
                     <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
+                    ${replyReferenceHtml}
                     ${textHtml}
                     ${mediaHtml}
                 </div>
+                ${replyButtonHtml}
             `;
         }
         
@@ -618,13 +651,29 @@ function displayMessage(message, isFromHistory = false) {
         const deleteButtonHtml = isOwnMessage ? 
             `<button class="message-delete-btn" onclick="deleteMessage('${escapeHtml(message.id)}')" title="Delete message">×</button>` : '';
         
+        // Create reply button for all messages (except system messages)
+        const replyButtonHtml = (message.type !== 'join' && message.type !== 'leave') ? 
+            `<button class="message-reply-btn" onclick="replyToMessage('${escapeHtml(message.id)}', '${escapeHtml(message.sender)}', '${escapeHtml(message.text || 'Media message')}')" title="Reply to message">↩</button>` : '';
+        
+        // Create reply reference if this message is a reply
+        const replyReferenceHtml = message.replyTo ? 
+            `<div class="message-reply-reference" onclick="scrollToMessage('${escapeHtml(message.replyTo.id)}')">
+                <div class="reply-reference-header">
+                    <span class="reply-icon">↩</span>
+                    <span class="reply-reference-sender">${escapeHtml(message.replyTo.sender)}</span>
+                </div>
+                <div class="reply-reference-content">${escapeHtml(message.replyTo.text || 'Media message')}</div>
+            </div>` : '';
+        
         if (isOwnMessage) {
             messageEl.innerHTML = `
                 ${avatarHtml}
                 <div class="message-content">
                     <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
+                    ${replyReferenceHtml}
                     <div>${processLinksInText(escapeHtml(message.text))}</div>
                 </div>
+                ${replyButtonHtml}
                 ${deleteButtonHtml}
             `;
         } else {
@@ -632,8 +681,10 @@ function displayMessage(message, isFromHistory = false) {
                 ${avatarHtml}
                 <div class="message-content">
                     <div class="message-info">${escapeHtml(message.sender)} • ${time}</div>
+                    ${replyReferenceHtml}
                     <div>${processLinksInText(escapeHtml(message.text))}</div>
                 </div>
+                ${replyButtonHtml}
             `;
         }
         
@@ -1177,11 +1228,26 @@ function sendUrlMediaMessage(mediaUrl, originalText) {
         fileName: fileName,
         text: captionText // Include any additional text as caption
     };
+    
+    // Add reply information if replying to a message
+    if (currentReply) {
+        mediaMessage.replyTo = {
+            id: currentReply.id,
+            sender: currentReply.sender,
+            text: currentReply.text
+        };
+        debugLog(`Including reply to message ${currentReply.id} in URL media message`);
+    }
 
     debugLog(`Sending URL media message: ${JSON.stringify(mediaMessage)}`);
     try {
         ws.send(JSON.stringify(mediaMessage));
         messageInput.value = '';
+        
+        // Clear reply state after sending
+        if (currentReply) {
+            cancelReply();
+        }
         
         // Enhanced scroll handling for URL media messages
         isUserScrolledUp = false; // Reset scroll state
@@ -1621,6 +1687,16 @@ function sendMediaMessage() {
                 fileName: response.fileName,
                 text: text // Include text if provided
             };
+            
+            // Add reply information if replying to a message
+            if (currentReply) {
+                mediaMessage.replyTo = {
+                    id: currentReply.id,
+                    sender: currentReply.sender,
+                    text: currentReply.text
+                };
+                debugLog(`Including reply to message ${currentReply.id} in media message`);
+            }
 
             debugLog(`Sending media message: ${JSON.stringify(mediaMessage)}`);
             ws.send(JSON.stringify(mediaMessage));
@@ -1628,6 +1704,11 @@ function sendMediaMessage() {
             // Clear preview, reset form, and clear text input
             clearMediaPreview();
             messageInput.value = '';
+            
+            // Clear reply state after sending
+            if (currentReply) {
+                cancelReply();
+            }
             
             // Enhanced scroll handling for sent media messages
             isUserScrolledUp = false; // Reset scroll state
@@ -1711,6 +1792,64 @@ function handleMessageDeletion(messageId) {
         }, 500); // Match animation duration
     } else {
         debugLog(`Message element with ID ${messageId} not found in UI`);
+    }
+}
+
+// Reply functionality
+let currentReply = null;
+
+function replyToMessage(messageId, sender, text) {
+    debugLog(`Setting up reply to message ${messageId} from ${sender}`);
+    
+    currentReply = {
+        id: messageId,
+        sender: sender,
+        text: text
+    };
+    
+    // Show reply preview
+    const replyPreview = document.getElementById('replyPreview');
+    const replySender = document.getElementById('replySender');
+    const replyPreviewMessage = document.getElementById('replyPreviewMessage');
+    
+    if (replyPreview && replySender && replyPreviewMessage) {
+        replySender.textContent = sender;
+        replyPreviewMessage.textContent = text.length > 100 ? text.substring(0, 100) + '...' : text;
+        replyPreview.style.display = 'block';
+        
+        // Focus the message input
+        const messageInput = document.getElementById('messageInput');
+        if (messageInput) {
+            messageInput.focus();
+        }
+    }
+}
+
+function cancelReply() {
+    debugLog('Cancelling reply');
+    
+    currentReply = null;
+    const replyPreview = document.getElementById('replyPreview');
+    if (replyPreview) {
+        replyPreview.style.display = 'none';
+    }
+}
+
+function scrollToMessage(messageId) {
+    debugLog(`Scrolling to message ${messageId}`);
+    
+    const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+    if (messageElement) {
+        messageElement.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' 
+        });
+        
+        // Highlight the message briefly
+        messageElement.style.backgroundColor = 'rgba(99, 102, 241, 0.2)';
+        setTimeout(() => {
+            messageElement.style.backgroundColor = '';
+        }, 2000);
     }
 }
 

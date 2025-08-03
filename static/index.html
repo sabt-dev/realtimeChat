@@ -173,6 +173,19 @@
 
                 <div class="messages" id="messages"></div>
 
+                <!-- Reply Preview Area -->
+                <div class="reply-preview" id="replyPreview" style="display: none;">
+                    <div class="reply-preview-content">
+                        <div class="reply-preview-header">
+                            <span class="reply-icon">↩️</span>
+                            <span class="reply-text">Replying to</span>
+                            <span class="reply-sender" id="replySender"></span>
+                            <button class="reply-cancel" onclick="cancelReply()" title="Cancel reply">×</button>
+                        </div>
+                        <div class="reply-preview-message" id="replyPreviewMessage"></div>
+                    </div>
+                </div>
+
                 <div class="message-input">
                     <button class="media-upload-btn" onclick="document.getElementById('fileInput').click()" title="Upload image or video">
                         🧷

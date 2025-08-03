@@ -170,16 +170,19 @@ func NewMessageService() *MessageService {
 }
 
 // CreateMessage creates a new message
-func (s *MessageService) CreateMessage(senderID, roomID uint, text, msgType, mediaURL, mediaType, fileName string) (*models.Message, error) {
+func (s *MessageService) CreateMessage(senderID, roomID uint, text, msgType, mediaURL, mediaType, fileName string, replyToID *uint, replyToSender, replyToText string) (*models.Message, error) {
 	message := models.Message{
-		UUID:      uuid.New().String(),
-		SenderID:  senderID,
-		RoomID:    roomID,
-		Text:      text,
-		Type:      msgType,
-		MediaURL:  mediaURL,
-		MediaType: mediaType,
-		FileName:  fileName,
+		UUID:          uuid.New().String(),
+		SenderID:      senderID,
+		RoomID:        roomID,
+		Text:          text,
+		Type:          msgType,
+		MediaURL:      mediaURL,
+		MediaType:     mediaType,
+		FileName:      fileName,
+		ReplyToID:     replyToID,
+		ReplyToSender: replyToSender,
+		ReplyToText:   replyToText,
 	}
 
 	if err := s.db.Create(&message).Error; err != nil {
@@ -193,7 +196,7 @@ func (s *MessageService) CreateMessage(senderID, roomID uint, text, msgType, med
 // GetMessageByUUID gets a message by UUID with associations
 func (s *MessageService) GetMessageByUUID(uuid string) (*models.Message, error) {
 	var message models.Message
-	if err := s.db.Preload("Sender").Preload("Room").Where("uuid = ?", uuid).First(&message).Error; err != nil {
+	if err := s.db.Preload("Sender").Preload("Room").Preload("ReplyTo").Where("uuid = ?", uuid).First(&message).Error; err != nil {
 		return nil, err
 	}
 	return &message, nil
@@ -203,7 +206,7 @@ func (s *MessageService) GetMessageByUUID(uuid string) (*models.Message, error) 
 func (s *MessageService) GetRoomMessages(roomName string, limit, offset int) ([]models.Message, error) {
 	var messages []models.Message
 
-	if err := s.db.Preload("Sender").Preload("Room").
+	if err := s.db.Preload("Sender").Preload("Room").Preload("ReplyTo").
 		Joins("JOIN rooms ON messages.room_id = rooms.id").
 		Where("rooms.name = ?", roomName).
 		Order("messages.created_at ASC").
@@ -213,6 +216,15 @@ func (s *MessageService) GetRoomMessages(roomName string, limit, offset int) ([]
 	}
 
 	return messages, nil
+}
+
+// GetMessageIDByUUID gets a message ID by UUID
+func (s *MessageService) GetMessageIDByUUID(uuid string) (uint, error) {
+	var message models.Message
+	if err := s.db.Select("id").Where("uuid = ?", uuid).First(&message).Error; err != nil {
+		return 0, err
+	}
+	return message.ID, nil
 }
 
 // DeleteMessage soft deletes a message (only if user is the sender)

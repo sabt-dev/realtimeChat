@@ -35,22 +35,29 @@ type Room struct {
 
 // Message represents a chat message
 type Message struct {
-	ID        uint           `gorm:"primaryKey" json:"id"`
-	UUID      string         `gorm:"uniqueIndex;not null" json:"uuid"` // For client-side identification
-	SenderID  uint           `gorm:"not null" json:"sender_id"`
-	RoomID    uint           `gorm:"not null" json:"room_id"`
-	Text      string         `json:"text"`
-	Type      string         `gorm:"not null;default:message" json:"type"` // "join", "leave", "message", "media", "delete"
-	MediaURL  string         `json:"media_url,omitempty"`
-	MediaType string         `json:"media_type,omitempty"` // "image", "video"
-	FileName  string         `json:"file_name,omitempty"`
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	UUID      string `gorm:"uniqueIndex;not null" json:"uuid"` // For client-side identification
+	SenderID  uint   `gorm:"not null" json:"sender_id"`
+	RoomID    uint   `gorm:"not null" json:"room_id"`
+	Text      string `json:"text"`
+	Type      string `gorm:"not null;default:message" json:"type"` // "join", "leave", "message", "media", "delete"
+	MediaURL  string `json:"media_url,omitempty"`
+	MediaType string `json:"media_type,omitempty"` // "image", "video"
+	FileName  string `json:"file_name,omitempty"`
+
+	// Reply functionality
+	ReplyToID     *uint  `json:"reply_to_id,omitempty"`     // ID of the message being replied to
+	ReplyToSender string `json:"reply_to_sender,omitempty"` // Sender name of the original message
+	ReplyToText   string `json:"reply_to_text,omitempty"`   // Text of the original message
+
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// Relationships
-	Sender User `gorm:"foreignKey:SenderID" json:"sender"`
-	Room   Room `gorm:"foreignKey:RoomID" json:"room"`
+	Sender  User     `gorm:"foreignKey:SenderID" json:"sender"`
+	Room    Room     `gorm:"foreignKey:RoomID" json:"room"`
+	ReplyTo *Message `gorm:"foreignKey:ReplyToID" json:"reply_to,omitempty"`
 }
 
 // RoomMember represents the many-to-many relationship between users and rooms
@@ -82,19 +89,27 @@ type JoinRoomRequest struct {
 	RoomName string `json:"room"`
 }
 
+// ReplyInfo represents reply information for a message
+type ReplyInfo struct {
+	ID     string `json:"id"`
+	Sender string `json:"sender"`
+	Text   string `json:"text"`
+}
+
 // MessageResponse represents a message response for JSON serialization
 type MessageResponse struct {
-	ID        string    `json:"id"`     // UUID for client compatibility
-	Sender    string    `json:"sender"` // Sender name
-	Avatar    string    `json:"avatar,omitempty"`
-	Receiver  string    `json:"receiver,omitempty"`
-	Room      string    `json:"room"` // Room name
-	Text      string    `json:"text"`
-	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"`
-	MediaURL  string    `json:"mediaUrl,omitempty"`
-	MediaType string    `json:"mediaType,omitempty"`
-	FileName  string    `json:"fileName,omitempty"`
+	ID        string     `json:"id"`     // UUID for client compatibility
+	Sender    string     `json:"sender"` // Sender name
+	Avatar    string     `json:"avatar,omitempty"`
+	Receiver  string     `json:"receiver,omitempty"`
+	Room      string     `json:"room"` // Room name
+	Text      string     `json:"text"`
+	Timestamp time.Time  `json:"timestamp"`
+	Type      string     `json:"type"`
+	MediaURL  string     `json:"mediaUrl,omitempty"`
+	MediaType string     `json:"mediaType,omitempty"`
+	FileName  string     `json:"fileName,omitempty"`
+	ReplyTo   *ReplyInfo `json:"replyTo,omitempty"`
 }
 
 // ToResponse converts a Message to MessageResponse for JSON output
@@ -113,6 +128,21 @@ func (m *Message) ToResponse() MessageResponse {
 		roomName = m.Room.Name
 	}
 
+	// Handle reply information
+	var replyInfo *ReplyInfo
+	if m.ReplyToSender != "" {
+		replyInfo = &ReplyInfo{
+			ID:     "", // We'll need the original message UUID, for now use empty
+			Sender: m.ReplyToSender,
+			Text:   m.ReplyToText,
+		}
+
+		// If we have the reply relationship loaded, get the UUID
+		if m.ReplyTo != nil {
+			replyInfo.ID = m.ReplyTo.UUID
+		}
+	}
+
 	return MessageResponse{
 		ID:        m.UUID,
 		Sender:    senderName,
@@ -124,5 +154,6 @@ func (m *Message) ToResponse() MessageResponse {
 		MediaURL:  m.MediaURL,
 		MediaType: m.MediaType,
 		FileName:  m.FileName,
+		ReplyTo:   replyInfo,
 	}
 }

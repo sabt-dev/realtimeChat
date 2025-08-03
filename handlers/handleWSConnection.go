@@ -112,6 +112,7 @@ func (h *Hub) registerClient(client *models.Client) {
 		fmt.Sprintf("%s joined the room", user.Name),
 		"join",
 		"", "", "",
+		nil, "", "", // No reply for join messages
 	)
 	if err != nil {
 		log.Printf("Error creating join message: %v", err)
@@ -167,6 +168,7 @@ func (h *Hub) unregisterClient(client *models.Client) {
 						fmt.Sprintf("%s left the room", user.Name),
 						"leave",
 						"", "", "",
+						nil, "", "", // No reply for leave messages
 					)
 					if err != nil {
 						log.Printf("Error creating leave message: %v", err)
@@ -399,6 +401,24 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				continue
 			}
 
+			// Handle reply information for media messages
+			var replyToID *uint
+			var replyToSender, replyToText string
+
+			if replyData, hasReply := messageData["replyTo"].(map[string]interface{}); hasReply {
+				if replyUUID, ok := replyData["id"].(string); ok && replyUUID != "" {
+					if id, err := messageService.GetMessageIDByUUID(replyUUID); err == nil {
+						replyToID = &id
+					}
+				}
+				if sender, ok := replyData["sender"].(string); ok {
+					replyToSender = sender
+				}
+				if text, ok := replyData["text"].(string); ok {
+					replyToText = text
+				}
+			}
+
 			// Create media message
 			message, err := messageService.CreateMessage(
 				client.UserID,
@@ -408,6 +428,7 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				mediaURL,
 				mediaType,
 				fileName,
+				replyToID, replyToSender, replyToText,
 			)
 			if err != nil {
 				log.Printf("Error creating media message: %v", err)
@@ -435,6 +456,24 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				continue
 			}
 
+			// Handle reply information
+			var replyToID *uint
+			var replyToSender, replyToText string
+
+			if replyData, hasReply := messageData["replyTo"].(map[string]interface{}); hasReply {
+				if replyUUID, ok := replyData["id"].(string); ok && replyUUID != "" {
+					if id, err := messageService.GetMessageIDByUUID(replyUUID); err == nil {
+						replyToID = &id
+					}
+				}
+				if sender, ok := replyData["sender"].(string); ok {
+					replyToSender = sender
+				}
+				if text, ok := replyData["text"].(string); ok {
+					replyToText = text
+				}
+			}
+
 			// Create regular message
 			message, err := messageService.CreateMessage(
 				client.UserID,
@@ -442,6 +481,7 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				text,
 				"message",
 				"", "", "",
+				replyToID, replyToSender, replyToText,
 			)
 			if err != nil {
 				log.Printf("Error creating message: %v", err)
