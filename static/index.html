@@ -39,8 +39,8 @@
             </div>
 
             <div class="join-form hidden" id="joinForm">
-                <input type="text" id="roomname" placeholder="Enter room name" maxlength="30">
-                <button id="joinBtn">Join Room</button>
+                <button id="createPublicRoomBtn">Create Public Room</button>
+                <button id="createPrivateRoomBtn" class="private-room-btn">Create Private Room</button>
             </div>
 
             <div class="rooms-list" id="roomsList">
@@ -217,6 +217,66 @@
     <div id="imageModal" class="image-modal" onclick="closeImageModal()">
         <span class="close">&times;</span>
         <img id="modalImage" src="" alt="Full size image">
+    </div>
+
+    <!-- Public Room Creation Modal -->
+    <div id="publicRoomModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create Public Room</h3>
+                <span class="close" onclick="closePublicRoomModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="publicRoomName">Room Name:</label>
+                    <input type="text" id="publicRoomName" placeholder="Enter room name" maxlength="30" required>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closePublicRoomModal()">Cancel</button>
+                <button type="button" class="btn-create" onclick="submitPublicRoom()" id="createPublicRoomBtn">Create Room</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Private Room Creation Modal -->
+    <div id="privateRoomModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create Private Room</h3>
+                <span class="close" onclick="closePrivateRoomModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="privateRoomName">Room Name:</label>
+                    <input type="text" id="privateRoomName" placeholder="Enter room name" maxlength="50" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="privateRoomDescription">Description (optional):</label>
+                    <textarea id="privateRoomDescription" placeholder="Room description" maxlength="200"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label for="userSearch">Add Users:</label>
+                    <div class="user-search-container">
+                        <input type="text" id="userSearch" placeholder="Search users by name or email..." autocomplete="off">
+                        <div id="userSearchResults" class="search-results"></div>
+                    </div>
+                </div>
+                
+                <div class="selected-users" id="selectedUsers">
+                    <h4>Selected Users:</h4>
+                    <div id="selectedUsersList" class="selected-users-list">
+                        <!-- Selected users will be displayed here -->
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closePrivateRoomModal()">Cancel</button>
+                <button type="button" class="btn-create" onclick="createPrivateRoom()" id="createRoomBtn">Create Room</button>
+            </div>
+        </div>
     </div>
 
     <script src="/static/chat.js"></script>

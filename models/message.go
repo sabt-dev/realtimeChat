@@ -1,6 +1,7 @@
 package models
 
 import (
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -25,12 +26,15 @@ type Room struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	Name        string    `gorm:"uniqueIndex;not null" json:"name"`
 	Description string    `json:"description,omitempty"`
+	IsPrivate   bool      `gorm:"default:false" json:"is_private"`
+	CreatorID   *uint     `json:"creator_id,omitempty"` // Moderator/creator of the room
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 
 	// Relationships
 	Messages []Message    `gorm:"foreignKey:RoomID" json:"-"`
 	Members  []RoomMember `gorm:"foreignKey:RoomID" json:"-"`
+	Creator  *User        `gorm:"foreignKey:CreatorID" json:"creator,omitempty"`
 }
 
 // Message represents a chat message
@@ -85,6 +89,7 @@ type RoomMember struct {
 	ID       uint      `gorm:"primaryKey" json:"id"`
 	UserID   uint      `gorm:"not null" json:"user_id"`
 	RoomID   uint      `gorm:"not null" json:"room_id"`
+	Role     string    `gorm:"default:member" json:"role"` // "creator", "moderator", "member"
 	JoinedAt time.Time `gorm:"autoCreateTime" json:"joined_at"`
 	IsActive bool      `gorm:"default:true" json:"is_active"`
 
@@ -101,12 +106,34 @@ type Client struct {
 	Avatar string      `json:"avatar,omitempty"`
 	Room   string      `json:"room"`
 	Conn   interface{} `json:"-"` // WebSocket connection
+	Mutex  sync.Mutex  `json:"-"` // Mutex for safe concurrent WebSocket writes
 }
 
 // JoinRoomRequest represents a request to join a room
 type JoinRoomRequest struct {
 	UserName string `json:"username"`
 	RoomName string `json:"room"`
+}
+
+// CreatePrivateRoomRequest represents a request to create a private room
+type CreatePrivateRoomRequest struct {
+	RoomName    string   `json:"room_name" binding:"required"`
+	Description string   `json:"description"`
+	UserEmails  []string `json:"user_emails" binding:"required"`
+}
+
+// SearchUsersRequest represents a request to search for users
+type SearchUsersRequest struct {
+	Query string `json:"query" binding:"required"`
+	Limit int    `json:"limit"`
+}
+
+// UserSearchResult represents a user in search results
+type UserSearchResult struct {
+	ID     uint   `json:"id"`
+	Name   string `json:"name"`
+	Email  string `json:"email"`
+	Avatar string `json:"avatar,omitempty"`
 }
 
 // ReplyInfo represents reply information for a message

@@ -22,15 +22,29 @@ func InitDatabase() error {
 	dbPath := filepath.Join(".", "db.db")
 
 	// Open database connection using modernc.org/sqlite (pure Go, no CGO)
+	// Add connection parameters to prevent database locking issues
+	dsn := dbPath + "?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=1000&_foreign_keys=true"
+
 	db, err := gorm.Open(sqlite.Dialector{
 		DriverName: "sqlite",
-		DSN:        dbPath,
+		DSN:        dsn,
 	}, &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 	if err != nil {
 		return err
 	}
+
+	// Configure connection pool to prevent database locks
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+
+	// Set connection pool settings for SQLite
+	sqlDB.SetMaxOpenConns(1)    // SQLite works best with single connection
+	sqlDB.SetMaxIdleConns(1)    // Keep connection alive
+	sqlDB.SetConnMaxLifetime(0) // Keep connections indefinitely
 
 	// Set global DB variable
 	DB = db

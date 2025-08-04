@@ -11,13 +11,13 @@ let selectedFile = null;
 let isUploading = false;
 let isUserScrolledUp = false;
 let pendingMessages = 0;
+let isJoiningRoom = false; // Add state to prevent double room joining
 
 const authSection = document.getElementById('authSection');
 const loginOptions = document.getElementById('loginOptions');
 const userInfo = document.getElementById('userInfo');
 const joinForm = document.getElementById('joinForm');
-const roomnameInput = document.getElementById('roomname');
-const joinBtn = document.getElementById('joinBtn');
+const createPublicRoomBtn = document.getElementById('createPublicRoomBtn');
 const loginScreen = document.getElementById('loginScreen');
 const chatInterface = document.getElementById('chatInterface');
 const roomTitle = document.getElementById('roomTitle');
@@ -39,8 +39,7 @@ function checkRequiredElements() {
         'loginOptions': loginOptions,
         'userInfo': userInfo,
         'joinForm': joinForm,
-        'roomnameInput': roomnameInput,
-        'joinBtn': joinBtn,
+        'createPublicRoomBtn': createPublicRoomBtn,
         'loginScreen': loginScreen,
         'chatInterface': chatInterface
     };
@@ -109,23 +108,24 @@ function checkAuth() {
         });
 }
 
-function restoreSavedRoom() {
-    if (!isAuthenticated) {
-        debugLog('Not authenticated, cannot restore saved room');
-        return;
-    }
-    
-    const savedRoom = localStorage.getItem('currentRoom');
-    if (savedRoom && savedRoom.trim()) {
-        debugLog(`Found saved room: ${savedRoom}, attempting to rejoin...`);
-        // Smaller delay since UI is already properly set
-        setTimeout(() => {
-            joinRoomByName(savedRoom);
-        }, 100);
-    } else {
-        debugLog('No saved room found');
-    }
-}
+// Removed auto-rejoin functionality - users will manually select rooms after refresh
+// function restoreSavedRoom() {
+//     if (!isAuthenticated) {
+//         debugLog('Not authenticated, cannot restore saved room');
+//         return;
+//     }
+//     
+//     const savedRoom = localStorage.getItem('currentRoom');
+//     if (savedRoom && savedRoom.trim()) {
+//         debugLog(`Found saved room: ${savedRoom}, attempting to rejoin...`);
+//         // Smaller delay since UI is already properly set
+//         setTimeout(() => {
+//             joinRoomByName(savedRoom);
+//         }, 100);
+//     } else {
+//         debugLog('No saved room found');
+//     }
+// }
 
 function updateAuthUI() {
     if (isAuthenticated && currentUser) {
@@ -145,20 +145,9 @@ function updateAuthUI() {
             debugLog('No avatar URL found in user data');
         }
         
-        // Check if user has a saved room and should go directly to chat
-        const savedRoom = localStorage.getItem('currentRoom');
-        if (savedRoom && savedRoom.trim()) {
-            debugLog(`User has saved room: ${savedRoom}, hiding login screen`);
-            loginScreen.classList.add('hidden');
-            chatInterface.classList.remove('hidden');
-            // Set room title and show connecting status
-            roomTitle.textContent = `Room: ${savedRoom}`;
-            updateConnectionStatus('Connecting...');
-        } else {
-            // No saved room, show login screen
-            chatInterface.classList.add('hidden');
-            loginScreen.classList.remove('hidden');
-        }
+        // Always show login screen when user is authenticated, don't auto-rejoin rooms
+        chatInterface.classList.add('hidden');
+        loginScreen.classList.remove('hidden');
     } else {
         loginOptions.classList.remove('hidden');
         userInfo.classList.add('hidden');
@@ -168,11 +157,9 @@ function updateAuthUI() {
     }
 }
 
-// Join room
-joinBtn.addEventListener('click', joinRoom);
-roomnameInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') joinRoom();
-});
+// Create public room - now uses popup instead of input field
+createPublicRoomBtn.addEventListener('click', createPublicRoom);
+// Removed roomname input event listener - using popup instead
 
 // Send message
 sendBtn.addEventListener('click', sendMessage);
@@ -223,23 +210,91 @@ if (messagesContainer) {
     });
 }
 
-function joinRoom() {
+function createPublicRoom() {
     if (!isAuthenticated) {
         alert('Please login first');
         return;
     }
 
-    const room = roomnameInput.value.trim();
+    // Show custom modal instead of prompt
+    showPublicRoomModal();
+}
 
-    if (!room) {
-        alert('Please enter a room name');
+function showPublicRoomModal() {
+    const modal = document.getElementById('publicRoomModal');
+    const input = document.getElementById('publicRoomName');
+    
+    // Clear previous input
+    input.value = '';
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Focus on input field
+    setTimeout(() => {
+        input.focus();
+    }, 100);
+    
+    // Handle Enter key in input
+    input.onkeypress = function(e) {
+        if (e.key === 'Enter') {
+            submitPublicRoom();
+        }
+    };
+}
+
+function closePublicRoomModal() {
+    const modal = document.getElementById('publicRoomModal');
+    modal.style.display = 'none';
+}
+
+function submitPublicRoom() {
+    const input = document.getElementById('publicRoomName');
+    const roomName = input.value.trim();
+
+    if (!roomName) {
+        // Focus back on input if empty
+        input.focus();
         return;
     }
 
-    joinRoomByName(room);
+    // Close modal
+    closePublicRoomModal();
+
+    // Call the API to create a public room
+    fetch('/api/rooms/public', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+            roomName: roomName
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert(data.error);
+            return;
+        }
+        
+        // Join the newly created room
+        joinRoomByName(data.room.name);
+        
+        // Refresh the rooms list
+        loadActiveRooms();
+    })
+    .catch(error => {
+        console.error('Error creating public room:', error);
+        alert('Failed to create public room');
+    });
 }
 
 function joinRoomByName(roomName) {
+    debugLog(`=== joinRoomByName called with: ${roomName} ===`);
+    debugLog(`Current state - currentRoom: ${currentRoom}, isConnected: ${isConnected}, isJoiningRoom: ${isJoiningRoom}, isReconnecting: ${isReconnecting}`);
+    
     if (!isAuthenticated) {
         alert('Please login first');
         return;
@@ -252,17 +307,30 @@ function joinRoomByName(roomName) {
 
     // Check if already in the same room
     if (currentRoom === roomName && isConnected && ws && ws.readyState === WebSocket.OPEN) {
-        debugLog(`Already in room: ${roomName}, refreshing messages`);
-        // Clear and reload messages for a fresh view
-        clearMessages();
-        loadRoomHistory(false); // Don't clear again since we just did
+        debugLog(`Already in room: ${roomName}, no action needed`);
+        // User is already in this room and connected, no need to do anything
+        return;
+    }
+
+    // Check if already joining a room to prevent double clicks
+    if (isJoiningRoom) {
+        debugLog(`Already joining a room, ignoring click for: ${roomName}`);
         return;
     }
 
     debugLog(`Switching from room "${currentRoom}" to room "${roomName}"`);
     
-    // Update the room input field
-    roomnameInput.value = roomName;
+    // Set joining state to prevent double clicks
+    isJoiningRoom = true;
+    debugLog(`Set isJoiningRoom = true`);
+    
+    // Set a shorter timeout to reset joining state in case something goes wrong
+    setTimeout(() => {
+        if (isJoiningRoom) {
+            debugLog('Resetting joining state due to timeout');
+            isJoiningRoom = false;
+        }
+    }, 6000); // 6 second timeout (slightly longer than connection timeout)
     
     // Save current room to localStorage
     localStorage.setItem('currentRoom', roomName);
@@ -277,6 +345,7 @@ function joinRoomByName(roomName) {
     isReconnecting = false;
     
     currentRoom = roomName;
+    debugLog(`Updated currentRoom to: ${currentRoom}`);
     
     // Reset connection status
     isConnected = false;
@@ -287,6 +356,9 @@ function joinRoomByName(roomName) {
 }
 
 function connectWebSocket() {
+    debugLog(`=== connectWebSocket called ===`);
+    debugLog(`Current state - isReconnecting: ${isReconnecting}, currentRoom: ${currentRoom}`);
+    
     if (isReconnecting) {
         debugLog('Connection already in progress, skipping...');
         return;
@@ -297,47 +369,91 @@ function connectWebSocket() {
     debugLog(`Connecting to WebSocket: ${wsUrl}`);
 
     isReconnecting = true;
+    debugLog(`Set isReconnecting = true`);
+    
+    // Set a timeout to reset reconnecting state if connection takes too long
+    const connectionTimeoutId = setTimeout(() => {
+        if (isReconnecting && (!ws || ws.readyState === WebSocket.CONNECTING)) {
+            debugLog('Connection timeout - resetting reconnecting state');
+            isReconnecting = false;
+            isJoiningRoom = false;
+            updateConnectionStatus('Connection timeout');
+        }
+    }, 5000); // 5 second timeout
+    
+    // Store timeout ID to clear it later
+    if (connectionTimeout) {
+        clearTimeout(connectionTimeout);
+    }
+    connectionTimeout = connectionTimeoutId;
 
-    // Close existing connection if any and wait for it to fully close
+    // Close existing connection if any and proceed immediately
     if (ws && ws.readyState !== WebSocket.CLOSED) {
         debugLog('Closing existing WebSocket connection...');
         // Set a flag to indicate this is an intentional close
         ws._intentionalClose = true;
         
-        // Clean close with proper reason
+        // Close the connection
         ws.close(1000, 'Switching rooms');
         
-        // Wait longer for the connection to close properly before creating new one
-        connectionTimeout = setTimeout(() => {
-            if (isReconnecting) { // Only proceed if still in reconnecting state
-                createNewWebSocket(wsUrl);
-            }
-        }, 300);
+        // Force immediate cleanup and proceed with new connection
+        ws = null;
+        debugLog('Forced WebSocket cleanup, proceeding immediately with new connection');
+        createNewWebSocket(wsUrl);
     } else {
+        debugLog('No existing WebSocket or already closed, creating new connection');
         createNewWebSocket(wsUrl);
     }
 }
 
 function createNewWebSocket(wsUrl) {
-    debugLog('Creating new WebSocket connection...');
+    debugLog('=== createNewWebSocket called ===');
+    debugLog(`Current state - isReconnecting: ${isReconnecting}, isJoiningRoom: ${isJoiningRoom}`);
+    debugLog(`Existing WebSocket state: ${ws ? `readyState=${ws.readyState}` : 'null'}`);
+    
+    // Don't check existing WebSocket state when switching rooms
+    // The connection close handler should have already cleared the old connection
+    
+    // Clear connection timeout since we're proceeding with connection
+    if (connectionTimeout) {
+        clearTimeout(connectionTimeout);
+        connectionTimeout = null;
+        debugLog('Cleared connection timeout');
+    }
     
     // Clear any existing WebSocket reference
     ws = null;
+    debugLog('Cleared WebSocket reference');
     
     try {
+        debugLog(`Creating WebSocket connection to: ${wsUrl}`);
         ws = new WebSocket(wsUrl);
+        debugLog('WebSocket object created successfully');
     } catch (error) {
         debugLog(`Error creating WebSocket: ${error}`);
         isReconnecting = false;
+        isJoiningRoom = false;
         updateConnectionStatus('Connection failed');
         return;
     }
 
     ws.onopen = function() {
-        debugLog('WebSocket connected successfully');
-        isReconnecting = false;
+        debugLog('=== WebSocket OPENED successfully ===');
+        debugLog(`Connection opened! Current room: ${currentRoom}, Username: ${username}`);
+        debugLog(`State before reset - isReconnecting: ${isReconnecting}, isJoiningRoom: ${isJoiningRoom}`);
         
-        // Send join request
+        // Reset connection state immediately
+        isReconnecting = false;
+        isConnected = true;
+        
+        // Clear connection timeout on successful connection
+        if (connectionTimeout) {
+            clearTimeout(connectionTimeout);
+            connectionTimeout = null;
+            debugLog('Cleared connection timeout on open');
+        }
+        
+        // Send join request immediately
         const joinRequest = {
             username: username,
             room: currentRoom
@@ -346,25 +462,40 @@ function createNewWebSocket(wsUrl) {
         
         try {
             ws.send(JSON.stringify(joinRequest));
-            isConnected = true;
+            debugLog('Join request sent successfully via WebSocket');
+            
+            // Reset joining state since we've successfully connected and joined
+            isJoiningRoom = false;
+            debugLog(`Reset isJoiningRoom = false after successful join`);
             
             // Start heartbeat
             startHeartbeat();
+            debugLog('Heartbeat started');
             
             // Update UI and status after successful join
             updateUI();
+            debugLog('UI updated after successful join');
             
             // Load room history after a short delay to avoid disrupting the connection
             setTimeout(() => {
                 if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
+                    debugLog('Loading room history...');
                     loadRoomHistory(true);
                     // Use instant scroll for initial room join
-                    setTimeout(() => scrollToBottomInstant(), 1000);
+                    setTimeout(() => {
+                        debugLog('Scrolling to bottom after room history load');
+                        scrollToBottomInstant();
+                    }, 1000);
                 }
             }, 500);
+            
+            debugLog('=== Room join process completed successfully ===');
+            
         } catch (error) {
             debugLog(`Error sending join request: ${error}`);
             isReconnecting = false;
+            isJoiningRoom = false;
+            updateConnectionStatus('Join request failed');
         }
     };
 
@@ -379,6 +510,8 @@ function createNewWebSocket(wsUrl) {
                 handleMessageDeletion(message.id);
             } else if (message.type === 'reaction_update') {
                 updateMessageReactions(message);
+            } else if (message.type === 'room_update') {
+                handleRoomUpdate(message);
             } else {
                 displayMessage(message);
             }
@@ -391,7 +524,14 @@ function createNewWebSocket(wsUrl) {
         debugLog(`WebSocket disconnected: Code ${event.code}, Reason: ${event.reason}`);
         isConnected = false;
         isReconnecting = false;
+        isJoiningRoom = false; // Reset joining state on close
         stopHeartbeat();
+        
+        // Clear connection timeout on close
+        if (connectionTimeout) {
+            clearTimeout(connectionTimeout);
+            connectionTimeout = null;
+        }
         
         // Don't show "Disconnected" for intentional closes (room switching)
         const wasIntentional = this._intentionalClose || event.code === 1000;
@@ -420,7 +560,14 @@ function createNewWebSocket(wsUrl) {
         updateConnectionStatus('Connection error');
         isConnected = false;
         isReconnecting = false;
+        isJoiningRoom = false; // Reset joining state on error
         stopHeartbeat();
+        
+        // Clear connection timeout on error
+        if (connectionTimeout) {
+            clearTimeout(connectionTimeout);
+            connectionTimeout = null;
+        }
     };
 }
 
@@ -1089,6 +1236,114 @@ function loadActiveRooms() {
         return;
     }
     
+    // Trigger a room update broadcast from the server to get real-time data
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'request_room_update' }));
+    } else {
+        // Fallback to traditional API call if WebSocket not available
+        fetch('/api/rooms')
+            .then(response => {
+                if (response.status === 401) {
+                    debugLog('Unauthorized - redirecting to login');
+                    isAuthenticated = false;
+                    updateAuthUI();
+                    return;
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (!data) return;
+                const roomsContainer = document.getElementById('rooms');
+                roomsContainer.innerHTML = '';
+                
+                if (data.rooms && data.rooms.length > 0) {
+                    data.rooms.forEach(room => {
+                        const roomEl = document.createElement('div');
+                        roomEl.className = 'room-item';
+                        if (room.name === currentRoom) {
+                            roomEl.classList.add('active');
+                        }
+                        
+                        // Add visual indicators for inactive membership
+                        if (room.user_active === false) {
+                            roomEl.classList.add('inactive-member');
+                            roomEl.style.opacity = '0.7';
+                            roomEl.style.border = '1px dashed var(--border-color)';
+                        }
+                        
+                        // Add click event to join room
+                        roomEl.addEventListener('click', () => {
+                            debugLog(`Clicked on room: ${room.name}`);
+                            debugLog(`Current state - currentRoom: ${currentRoom}, isConnected: ${isConnected}, isJoiningRoom: ${isJoiningRoom}, isReconnecting: ${isReconnecting}`);
+                            
+                            // Check if already in this room
+                            if (currentRoom === room.name && isConnected && ws && ws.readyState === WebSocket.OPEN) {
+                                debugLog(`Already in room: ${room.name}, ignoring click`);
+                                return;
+                            }
+                            
+                            // Check if already joining a room
+                            if (isJoiningRoom) {
+                                debugLog(`Already joining a room, ignoring click for: ${room.name}`);
+                                return;
+                            }
+                            
+                            if (room.user_active === false) {
+                                // Show confirmation for inactive rooms
+                                if (confirm(`You are no longer an active member of "${room.name}". Would you like to try to rejoin?`)) {
+                                    joinRoomByName(room.name);
+                                }
+                            } else {
+                                joinRoomByName(room.name);
+                            }
+                        });
+                        
+                        // Build status text
+                        let statusText = '';
+                        if (room.user_active === false) {
+                            statusText = 'Left room';
+                            if (room.memberCount && room.memberCount > 0) {
+                                statusText += ` • ${room.memberCount} users still online`;
+                            }
+                        } else {
+                            statusText = room.count ? `${room.count} users online` : `${room.memberCount || 0} users online`;
+                        }
+                        
+                        roomEl.innerHTML = `
+                            <div>
+                                <strong>${escapeHtml(room.name)}</strong>
+                                ${room.is_private ? '<span style="color: var(--secondary-color); font-size: 12px; margin-left: 5px;">🔒 Private</span>' : ''}
+                                ${room.user_active === false ? '<span style="color: #ff6b6b; font-size: 12px; margin-left: 5px;">⚠ Inactive</span>' : ''}
+                            </div>
+                            <div style="font-size: 12px; opacity: 0.8;">${statusText}</div>
+                        `;
+                        roomsContainer.appendChild(roomEl);
+                    });
+                } else {
+                    roomsContainer.innerHTML = '<div style="opacity: 0.6; font-size: 14px;">No active rooms</div>';
+                }
+            })
+            .catch(error => {
+                debugLog(`Error loading active rooms: ${error}`);
+            });
+    }
+}
+
+// Handle real-time room updates from WebSocket
+function handleRoomUpdate(message) {
+    debugLog(`Received room update: ${JSON.stringify(message)}`);
+    
+    if (!isAuthenticated) {
+        return; // Don't update room list if not authenticated
+    }
+    
+    // Update the active rooms display with real-time data
+    updateActiveRoomsDisplay(message.rooms);
+}
+
+// Update the rooms display with real-time data
+function updateActiveRoomsDisplay(activeRooms) {
+    // First get the full room list from API to merge with active room data
     fetch('/api/rooms')
         .then(response => {
             if (response.status === 401) {
@@ -1106,30 +1361,110 @@ function loadActiveRooms() {
             
             if (data.rooms && data.rooms.length > 0) {
                 data.rooms.forEach(room => {
+                    // Find active room data for this room
+                    const activeRoom = activeRooms.find(ar => ar.name === room.name);
+                    const activeClients = activeRoom ? activeRoom.clients : [];
+                    const activeCount = activeRoom ? activeRoom.count : 0;
+                    
                     const roomEl = document.createElement('div');
                     roomEl.className = 'room-item';
                     if (room.name === currentRoom) {
                         roomEl.classList.add('active');
                     }
                     
+                    // Add visual indicators for inactive membership
+                    if (room.user_active === false) {
+                        roomEl.classList.add('inactive-member');
+                        roomEl.style.opacity = '0.7';
+                        roomEl.style.border = '1px dashed var(--border-color)';
+                    }
+                    
                     // Add click event to join room
                     roomEl.addEventListener('click', () => {
                         debugLog(`Clicked on room: ${room.name}`);
-                        joinRoomByName(room.name);
+                        debugLog(`Current state - currentRoom: ${currentRoom}, isConnected: ${isConnected}, isJoiningRoom: ${isJoiningRoom}, isReconnecting: ${isReconnecting}`);
+                        
+                        // Check if already in this room
+                        if (currentRoom === room.name && isConnected && ws && ws.readyState === WebSocket.OPEN) {
+                            debugLog(`Already in room: ${room.name}, ignoring click`);
+                            return;
+                        }
+                        
+                        // Check if already joining a room
+                        if (isJoiningRoom) {
+                            debugLog(`Already joining a room, ignoring click for: ${room.name}`);
+                            return;
+                        }
+                        
+                        if (room.user_active === false) {
+                            // Show confirmation for inactive rooms
+                            if (confirm(`You are no longer an active member of "${room.name}". Would you like to try to rejoin?`)) {
+                                joinRoomByName(room.name);
+                            }
+                        } else {
+                            joinRoomByName(room.name);
+                        }
                     });
                     
+                    // Build status text with real-time active count
+                    let statusText = '';
+                    if (room.user_active === false) {
+                        statusText = 'Left room';
+                        if (activeCount > 0) {
+                            statusText += ` • ${activeCount} users online`;
+                        } else if (room.memberCount && room.memberCount > 0) {
+                            statusText += ` • ${room.memberCount} users still members`;
+                        }
+                    } else {
+                        statusText = `${activeCount} users online`;
+                        if (room.memberCount && room.memberCount > activeCount) {
+                            statusText += ` • ${room.memberCount} total members`;
+                        }
+                    }
+                    
                     roomEl.innerHTML = `
-                        <div><strong>${escapeHtml(room.name)}</strong></div>
-                        <div style="font-size: 12px; opacity: 0.8;">${room.count} users online</div>
+                        <div>
+                            <strong>${escapeHtml(room.name)}</strong>
+                            ${room.is_private ? '<span style="color: var(--secondary-color); font-size: 12px; margin-left: 5px;">🔒 Private</span>' : ''}
+                            ${room.user_active === false ? '<span style="color: #ff6b6b; font-size: 12px; margin-left: 5px;">⚠ Inactive</span>' : ''}
+                            ${activeCount > 0 ? '<span style="color: #4CAF50; font-size: 12px; margin-left: 5px;">● Online</span>' : ''}
+                        </div>
+                        <div style="font-size: 12px; opacity: 0.8;">${statusText}</div>
                     `;
                     roomsContainer.appendChild(roomEl);
+                });
+                
+                // Add any active public rooms that might not be in the database yet
+                activeRooms.forEach(activeRoom => {
+                    const found = data.rooms.find(room => room.name === activeRoom.name);
+                    if (!found) {
+                        const roomEl = document.createElement('div');
+                        roomEl.className = 'room-item';
+                        if (activeRoom.name === currentRoom) {
+                            roomEl.classList.add('active');
+                        }
+                        
+                        roomEl.addEventListener('click', () => {
+                            debugLog(`Clicked on active room: ${activeRoom.name}`);
+                            joinRoomByName(activeRoom.name);
+                        });
+                        
+                        roomEl.innerHTML = `
+                            <div>
+                                <strong>${escapeHtml(activeRoom.name)}</strong>
+                                <span style="color: #4CAF50; font-size: 12px; margin-left: 5px;">● Online</span>
+                            </div>
+                            <div style="font-size: 12px; opacity: 0.8;">${activeRoom.count} users online</div>
+                        `;
+                        roomsContainer.appendChild(roomEl);
+                    }
                 });
             } else {
                 roomsContainer.innerHTML = '<div style="opacity: 0.6; font-size: 14px;">No active rooms</div>';
             }
         })
         .catch(error => {
-            debugLog(`Error loading active rooms: ${error}`);
+            debugLog(`Error updating active rooms display: ${error}`);
         });
 }
 
@@ -1912,6 +2247,8 @@ const popularEmojis = ['👍', '❤️', '😂', '😮', '😢', '😡', '🎉',
 
 // Toggle emoji picker
 function toggleEmojiPicker(messageId) {
+    console.log('toggleEmojiPicker called for messageId:', messageId); // Debug
+    
     // Remove any existing emoji picker
     const existingPicker = document.querySelector('.emoji-picker');
     if (existingPicker) {
@@ -1979,6 +2316,8 @@ function closeEmojiPickerOnOutsideClick(event) {
 
 // Add reaction to a message
 function addReaction(messageId, emoji) {
+    console.log('addReaction called:', { messageId, emoji, wsConnected: !!ws, isConnected }); // Debug
+    
     if (!ws || !isConnected) {
         console.error('WebSocket not connected');
         return;
@@ -1991,6 +2330,7 @@ function addReaction(messageId, emoji) {
         action: 'toggle' // Toggle will add if not exists, remove if exists
     };
 
+    console.log('Sending reaction data:', reactionData); // Debug
     ws.send(JSON.stringify(reactionData));
     debugLog(`Sent reaction: ${emoji} for message ${messageId}`);
 }
@@ -2052,14 +2392,359 @@ window.addEventListener('load', () => {
             }
             
             // Attempt to restore saved room after authentication
-            restoreSavedRoom();
+            //restoreSavedRoom();
+            
+            // Load active rooms after authentication is confirmed
+            loadActiveRooms();
         } else {
             debugLog('User not authenticated');
             // Clear any saved room if not authenticated
             localStorage.removeItem('currentRoom');
+            // Still load rooms to show the "Login to see active rooms" message
+            loadActiveRooms();
         }
     });
+});
+
+// Private Room Creation functionality
+let selectedUsers = new Map(); // Map of user email -> user object
+
+// Initialize private room modal functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const createPrivateRoomBtn = document.getElementById('createPrivateRoomBtn');
+    const userSearchInput = document.getElementById('userSearch');
     
-    // Initial load of active rooms
-    loadActiveRooms();
+    if (createPrivateRoomBtn) {
+        createPrivateRoomBtn.addEventListener('click', openPrivateRoomModal);
+    }
+    
+    if (userSearchInput) {
+        userSearchInput.addEventListener('input', debounce(searchUsers, 300));
+        userSearchInput.addEventListener('focus', function() {
+            if (this.value.trim()) {
+                searchUsers();
+            }
+        });
+        
+        // Hide search results when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.user-search-container')) {
+                hideSearchResults();
+            }
+        });
+    }
+});
+
+function openPrivateRoomModal() {
+    const modal = document.getElementById('privateRoomModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        // Clear previous data
+        clearPrivateRoomForm();
+        // Focus on room name input
+        setTimeout(() => {
+            const roomNameInput = document.getElementById('privateRoomName');
+            if (roomNameInput) {
+                roomNameInput.focus();
+            }
+        }, 100);
+    }
+}
+
+function closePrivateRoomModal() {
+    const modal = document.getElementById('privateRoomModal');
+    if (modal) {
+        modal.style.display = 'none';
+        clearPrivateRoomForm();
+    }
+}
+
+function clearPrivateRoomForm() {
+    const roomNameInput = document.getElementById('privateRoomName');
+    const descriptionInput = document.getElementById('privateRoomDescription');
+    const userSearchInput = document.getElementById('userSearch');
+    
+    if (roomNameInput) roomNameInput.value = '';
+    if (descriptionInput) descriptionInput.value = '';
+    if (userSearchInput) userSearchInput.value = '';
+    
+    selectedUsers.clear();
+    updateSelectedUsersList();
+    hideSearchResults();
+}
+
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+}
+
+function searchUsers() {
+    const query = document.getElementById('userSearch').value.trim();
+    if (query.length < 2) {
+        hideSearchResults();
+        return;
+    }
+    
+    debugLog(`Searching for users: ${query}`);
+    
+    fetch(`/api/users/search?q=${encodeURIComponent(query)}&limit=50`)
+        .then(response => {
+            if (response.status === 401) {
+                debugLog('Unauthorized - redirecting to login');
+                isAuthenticated = false;
+                updateAuthUI();
+                return null;
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (!data) return;
+            displaySearchResults(data.users || []);
+        })
+        .catch(error => {
+            debugLog(`Error searching users: ${error}`);
+            hideSearchResults();
+        });
+}
+
+function displaySearchResults(users) {
+    const resultsContainer = document.getElementById('userSearchResults');
+    if (!resultsContainer) return;
+    
+    if (users.length === 0) {
+        resultsContainer.innerHTML = '<div class="search-result-item">No users found</div>';
+        resultsContainer.classList.add('show');
+        return;
+    }
+    
+    resultsContainer.innerHTML = '';
+    
+    users.forEach(user => {
+        // Skip if user is already selected
+        if (selectedUsers.has(user.email)) return;
+        
+        // Skip current user - they'll be automatically added as room creator
+        if (currentUser && user.email === currentUser.email) return;
+        
+        const resultItem = document.createElement('div');
+        resultItem.className = 'search-result-item';
+        resultItem.onclick = () => selectUser(user);
+        
+        const avatar = document.createElement('div');
+        avatar.className = 'search-result-avatar';
+        if (user.avatar) {
+            avatar.style.backgroundImage = `url(${user.avatar})`;
+            avatar.style.backgroundSize = 'cover';
+            avatar.style.backgroundPosition = 'center';
+        } else {
+            avatar.textContent = user.name.charAt(0).toUpperCase();
+        }
+        
+        const info = document.createElement('div');
+        info.className = 'search-result-info';
+        
+        const name = document.createElement('div');
+        name.className = 'search-result-name';
+        name.textContent = user.name;
+        
+        const email = document.createElement('div');
+        email.className = 'search-result-email';
+        email.textContent = user.email;
+        
+        info.appendChild(name);
+        info.appendChild(email);
+        
+        resultItem.appendChild(avatar);
+        resultItem.appendChild(info);
+        
+        resultsContainer.appendChild(resultItem);
+    });
+    
+    resultsContainer.classList.add('show');
+}
+
+function hideSearchResults() {
+    const resultsContainer = document.getElementById('userSearchResults');
+    if (resultsContainer) {
+        resultsContainer.classList.remove('show');
+    }
+}
+
+function selectUser(user) {
+    selectedUsers.set(user.email, user);
+    updateSelectedUsersList();
+    
+    // Clear search input and hide results
+    const searchInput = document.getElementById('userSearch');
+    if (searchInput) {
+        searchInput.value = '';
+    }
+    hideSearchResults();
+    
+    debugLog(`Selected user: ${user.name} (${user.email})`);
+}
+
+function removeUser(email) {
+    selectedUsers.delete(email);
+    updateSelectedUsersList();
+    debugLog(`Removed user: ${email}`);
+}
+
+function updateSelectedUsersList() {
+    const container = document.getElementById('selectedUsersList');
+    if (!container) return;
+    
+    if (selectedUsers.size === 0) {
+        container.innerHTML = '<div style="color: var(--text-muted); font-style: italic;">No users selected</div>';
+        return;
+    }
+    
+    container.innerHTML = '';
+    
+    selectedUsers.forEach((user, email) => {
+        const userTag = document.createElement('div');
+        userTag.className = 'selected-user-tag';
+        
+        const avatar = document.createElement('div');
+        avatar.className = 'selected-user-avatar';
+        if (user.avatar) {
+            avatar.style.backgroundImage = `url(${user.avatar})`;
+            avatar.style.backgroundSize = 'cover';
+            avatar.style.backgroundPosition = 'center';
+        } else {
+            avatar.textContent = user.name.charAt(0).toUpperCase();
+        }
+        
+        const name = document.createElement('span');
+        name.textContent = user.name;
+        
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'selected-user-remove';
+        removeBtn.innerHTML = '×';
+        removeBtn.onclick = () => removeUser(email);
+        removeBtn.title = 'Remove user';
+        
+        userTag.appendChild(avatar);
+        userTag.appendChild(name);
+        userTag.appendChild(removeBtn);
+        
+        container.appendChild(userTag);
+    });
+}
+
+function createPrivateRoom() {
+    const roomName = document.getElementById('privateRoomName').value.trim();
+    const description = document.getElementById('privateRoomDescription').value.trim();
+    
+    if (!roomName) {
+        alert('Please enter a room name');
+        return;
+    }
+    
+    if (roomName.length < 3 || roomName.length > 50) {
+        alert('Room name must be between 3 and 50 characters');
+        return;
+    }
+    
+    if (selectedUsers.size === 0) {
+        alert('Please select at least one user to invite');
+        return;
+    }
+    
+    const createBtn = document.getElementById('createRoomBtn');
+    if (createBtn) {
+        createBtn.disabled = true;
+        createBtn.textContent = 'Creating...';
+    }
+    
+    const userEmails = Array.from(selectedUsers.keys());
+    
+    const requestData = {
+        room_name: roomName,
+        description: description,
+        user_emails: userEmails
+    };
+    
+    debugLog(`Creating private room: ${JSON.stringify(requestData)}`);
+    
+    fetch('/api/rooms/private', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestData)
+    })
+    .then(response => {
+        if (response.status === 401) {
+            debugLog('Unauthorized - redirecting to login');
+            isAuthenticated = false;
+            updateAuthUI();
+            return null;
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (createBtn) {
+            createBtn.disabled = false;
+            createBtn.textContent = 'Create Room';
+        }
+        
+        if (!data) return;
+        
+        if (data.error) {
+            if (data.missing_emails) {
+                alert(`Some users were not found: ${data.missing_emails.join(', ')}`);
+            } else {
+                alert(`Error: ${data.error}`);
+            }
+            return;
+        }
+        
+        if (data.room) {
+            debugLog(`Private room created successfully: ${data.room.name}`);
+            closePrivateRoomModal();
+            
+            // Refresh the rooms list
+            loadActiveRooms();
+            
+            // Automatically join the newly created room
+            setTimeout(() => {
+                joinRoomByName(data.room.name);
+            }, 500);
+        }
+    })
+    .catch(error => {
+        debugLog(`Error creating private room: ${error}`);
+        alert('Failed to create private room. Please try again.');
+        
+        if (createBtn) {
+            createBtn.disabled = false;
+            createBtn.textContent = 'Create Room';
+        }
+    });
+}
+
+// Close modal when clicking outside of it
+window.onclick = function(event) {
+    const modal = document.getElementById('privateRoomModal');
+    if (event.target === modal) {
+        closePrivateRoomModal();
+    }
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        const modal = document.getElementById('privateRoomModal');
+        if (modal && modal.style.display === 'flex') {
+            closePrivateRoomModal();
+        }
+    }
 });

@@ -61,6 +61,11 @@ func main() {
 	r.GET("/api/rooms", middleware.AuthMiddleware(), handlers.GetRooms)
 	r.GET("/api/rooms/:room/messages", middleware.AuthMiddleware(), handlers.GetRoomMessages)
 
+	// New API endpoints for private rooms
+	r.GET("/api/users/search", middleware.AuthMiddleware(), handlers.SearchUsers)
+	r.POST("/api/rooms/private", middleware.AuthMiddleware(), handlers.CreatePrivateRoom)
+	r.POST("/api/rooms/public", middleware.AuthMiddleware(), handlers.CreatePublicRoom)
+
 	log.Println("Server starting on :8080")
 	r.Run(":8080")
 }

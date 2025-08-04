@@ -126,6 +126,9 @@ func (h *Hub) registerClient(client *models.Client) {
 		response := joinMessage.ToResponse()
 		chatHub.broadcast <- &response
 	}()
+
+	// Broadcast room update to all users
+	go broadcastRoomUpdate(client.Room)
 }
 
 func (h *Hub) unregisterClient(client *models.Client) {
@@ -182,6 +185,9 @@ func (h *Hub) unregisterClient(client *models.Client) {
 				}
 			}
 
+			// Broadcast room update to all users after user leaves
+			go broadcastRoomUpdate(client.Room)
+
 			// Remove room if empty
 			if len(room) == 0 {
 				delete(h.rooms, client.Room)
@@ -220,7 +226,13 @@ func (h *Hub) broadcastToRoom(roomID string, message *models.MessageResponse) {
 			log.Printf("Processing client %s (%s) in room %s", clientID, client.Name, roomID)
 			if conn, ok := client.Conn.(*websocket.Conn); ok {
 				log.Printf("Sending message to client %s (%s)", clientID, client.Name)
-				if err := conn.WriteMessage(websocket.TextMessage, messageBytes); err != nil {
+
+				// Use mutex to prevent concurrent writes to the same WebSocket connection
+				client.Mutex.Lock()
+				err := conn.WriteMessage(websocket.TextMessage, messageBytes)
+				client.Mutex.Unlock()
+
+				if err != nil {
 					log.Printf("Error sending message to client %s: %v", client.Name, err)
 					// Remove client on error
 					go func(c *models.Client) {
@@ -301,6 +313,41 @@ func HandleWSConnection(c *gin.Context) {
 		return
 	}
 
+	// Check if user can access the requested room
+	roomService := services.NewRoomService()
+	canAccess, err := roomService.CanUserAccessRoom(dbUser.ID, joinReq.RoomName)
+	if err != nil {
+		// If room doesn't exist and it's a potential public room, create it
+		if err.Error() == "record not found" {
+			log.Printf("Room %s doesn't exist, creating as public room", joinReq.RoomName)
+			_, createErr := roomService.CreateOrGetRoom(joinReq.RoomName)
+			if createErr != nil {
+				log.Printf("Error creating room %s: %v", joinReq.RoomName, createErr)
+				conn.WriteJSON(gin.H{"error": "Failed to create room"})
+				conn.Close()
+				return
+			}
+			// Now check access again
+			canAccess, err = roomService.CanUserAccessRoom(dbUser.ID, joinReq.RoomName)
+			if err != nil {
+				log.Printf("Error checking room access after creation: %v", err)
+				conn.Close()
+				return
+			}
+		} else {
+			log.Printf("Error checking room access: %v", err)
+			conn.Close()
+			return
+		}
+	}
+
+	if !canAccess {
+		log.Printf("User %s cannot access private room %s", userName, joinReq.RoomName)
+		conn.WriteJSON(gin.H{"error": "Access denied to this room"})
+		conn.Close()
+		return
+	}
+
 	// Use authenticated user's name instead of the one from the request
 	client := &models.Client{
 		ID:     generateClientID(),
@@ -335,6 +382,20 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 
 		log.Printf("Received message from client %s: %+v", client.Name, messageData)
 
+		// SECURITY: Validate room access on every message to prevent localStorage manipulation attacks
+		roomService := services.NewRoomService()
+		canAccess, err := roomService.CanUserAccessRoom(client.UserID, client.Room)
+		if err != nil {
+			log.Printf("Error checking room access for user %d and room %s: %v", client.UserID, client.Room, err)
+			continue
+		}
+		if !canAccess {
+			log.Printf("SECURITY VIOLATION: User %s (ID: %d) attempted to send message to unauthorized room %s", client.Name, client.UserID, client.Room)
+			// Disconnect the client for security violation
+			conn.WriteJSON(gin.H{"error": "Access denied to this room"})
+			return
+		}
+
 		// Check message type
 		msgType, ok := messageData["type"].(string)
 		if !ok {
@@ -342,12 +403,17 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 		}
 
 		messageService := services.NewMessageService()
-		roomService := services.NewRoomService()
 
 		switch msgType {
 		case "ping":
 			// Handle heartbeat ping - no need to broadcast
 			log.Printf("Received ping from client %s", client.Name)
+			continue
+
+		case "request_room_update":
+			// Handle room update request - send current room status to this client
+			log.Printf("Room update requested by client %s", client.Name)
+			go sendRoomUpdateToClient(client)
 			continue
 
 		case "delete":
@@ -460,8 +526,36 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 				action = "toggle" // Default action
 			}
 
+			// Verify the message exists and belongs to the current room
+			message, err := messageService.GetMessageByUUID(messageID)
+			if err != nil {
+				log.Printf("Message not found for reaction from %s: %s", client.Name, messageID)
+				continue
+			}
+
+			// Get the room for this message
+			room, err := roomService.GetRoomByID(message.RoomID)
+			if err != nil {
+				log.Printf("Room not found for message %s: %v", messageID, err)
+				continue
+			}
+
+			// Verify user is in the same room as the message
+			if room.Name != client.Room {
+				log.Printf("User %s trying to react to message from different room", client.Name)
+				continue
+			}
+
+			// For private rooms, verify user is an active member
+			if room.IsPrivate {
+				isMember, err := roomService.IsUserMemberOfRoom(client.UserID, room.ID)
+				if err != nil || !isMember {
+					log.Printf("User %s not authorized to react in private room %s", client.Name, room.Name)
+					continue
+				}
+			}
+
 			var updatedMessage *models.Message
-			var err error
 
 			switch action {
 			case "add":
@@ -547,6 +641,95 @@ func handleClientMessages(client *models.Client, conn *websocket.Conn) {
 	}
 }
 
+// sendRoomUpdateToClient sends current room status to a specific client
+// Only includes rooms that the user has access to
+func sendRoomUpdateToClient(client *models.Client) {
+	log.Printf("Sending personalized room update to client: %s (UserID: %d)", client.Name, client.UserID)
+
+	roomService := services.NewRoomService()
+
+	// Get all active rooms and their client counts
+	chatHub.mutex.RLock()
+	allActiveRooms := make(map[string][]string)
+	allActiveRoomCounts := make(map[string]int)
+
+	// Collect room information
+	for rName, activeRoom := range chatHub.rooms {
+		clientNames := make([]string, 0)
+		for _, c := range activeRoom {
+			clientNames = append(clientNames, c.Name)
+		}
+		allActiveRooms[rName] = clientNames
+		allActiveRoomCounts[rName] = len(activeRoom)
+	}
+	chatHub.mutex.RUnlock()
+
+	// Filter rooms based on user access
+	rooms := make([]gin.H, 0)
+	for rName, clientNames := range allActiveRooms {
+		// Check if user can access this room
+		canAccess, err := roomService.CanUserAccessRoom(client.UserID, rName)
+		if err != nil {
+			log.Printf("Error checking room access for user %d and room %s: %v", client.UserID, rName, err)
+			continue
+		}
+
+		if canAccess {
+			rooms = append(rooms, gin.H{
+				"name":    rName,
+				"clients": clientNames,
+				"count":   allActiveRoomCounts[rName],
+			})
+		} else {
+			log.Printf("User %s (ID: %d) does not have access to room %s, excluding from update", client.Name, client.UserID, rName)
+		}
+	}
+
+	// Create room update message
+	roomUpdate := map[string]interface{}{
+		"type":      "room_update",
+		"timestamp": time.Now(),
+		"rooms":     rooms,
+	}
+
+	messageBytes, err := json.Marshal(roomUpdate)
+	if err != nil {
+		log.Printf("Error marshaling room update for client %s: %v", client.Name, err)
+		return
+	}
+
+	// Send to specific client
+	if conn, ok := client.Conn.(*websocket.Conn); ok {
+		// Use mutex to prevent concurrent writes to the same WebSocket connection
+		client.Mutex.Lock()
+		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
+		client.Mutex.Unlock()
+
+		if err != nil {
+			log.Printf("Error sending room update to client %s: %v", client.Name, err)
+		} else {
+			log.Printf("Personalized room update sent successfully to client %s (%d rooms)", client.Name, len(rooms))
+		}
+	}
+}
+
 func generateClientID() string {
 	return fmt.Sprintf("client_%d", time.Now().UnixNano())
+}
+
+// broadcastRoomUpdate broadcasts room status updates to all connected clients
+// Each client receives only the rooms they have access to
+func broadcastRoomUpdate(roomName string) {
+	log.Printf("Broadcasting room update for room: %s", roomName)
+
+	// Send personalized room updates to each connected client
+	chatHub.mutex.RLock()
+	defer chatHub.mutex.RUnlock()
+
+	// Send personalized updates to all connected clients across all rooms
+	for _, room := range chatHub.rooms {
+		for _, client := range room {
+			go sendRoomUpdateToClient(client)
+		}
+	}
 }
