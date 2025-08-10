@@ -20,6 +20,7 @@ const joinForm = document.getElementById('joinForm');
 const createPublicRoomBtn = document.getElementById('createPublicRoomBtn');
 const loginScreen = document.getElementById('loginScreen');
 const chatInterface = document.getElementById('chatInterface');
+const startScreen = document.getElementById('startScreen');
 const roomTitle = document.getElementById('roomTitle');
 const connectionStatus = document.getElementById('connectionStatus');
 const messagesContainer = document.getElementById('messages');
@@ -145,15 +146,17 @@ function updateAuthUI() {
             debugLog('No avatar URL found in user data');
         }
         
-        // Always show login screen when user is authenticated, don't auto-rejoin rooms
+        // Always show start screen when user is authenticated and not in a room
         chatInterface.classList.add('hidden');
-        loginScreen.classList.remove('hidden');
+        if (startScreen) startScreen.classList.remove('hidden');
+        if (loginScreen) loginScreen.classList.add('hidden');
     } else {
         loginOptions.classList.remove('hidden');
         userInfo.classList.add('hidden');
         joinForm.classList.add('hidden');
         chatInterface.classList.add('hidden');
-        loginScreen.classList.remove('hidden');
+        if (startScreen) startScreen.classList.add('hidden');
+        if (loginScreen) loginScreen.classList.remove('hidden');
     }
 }
 
@@ -1153,7 +1156,8 @@ function scrollToBottomAndClear() {
 }
 
 function updateUI() {
-    loginScreen.classList.add('hidden');
+    if (startScreen) startScreen.classList.add('hidden');
+    if (loginScreen) loginScreen.classList.add('hidden');
     chatInterface.classList.remove('hidden');
     roomTitle.textContent = `Room: ${currentRoom}`;
     updateConnectionStatus('Connected');
@@ -1309,14 +1313,47 @@ function loadActiveRooms() {
                             statusText = room.count ? `${room.count} users online` : `${room.memberCount || 0} users online`;
                         }
                         
-                        roomEl.innerHTML = `
-                            <div>
-                                <strong>${escapeHtml(room.name)}</strong>
-                                ${room.is_private ? '<span style="color: var(--secondary-color); font-size: 12px; margin-left: 5px;">🔒 Private</span>' : ''}
-                                ${room.user_active === false ? '<span style="color: #ff6b6b; font-size: 12px; margin-left: 5px;">⚠ Inactive</span>' : ''}
+                        const isCreator = (room.is_creator === true) || (!!room.creator_id && currentUser && room.creator_id === currentUser.id);
+                        const menuHtml = `
+                            <div class="room-actions">
+                                <button class="room-menu-btn" aria-label="Room actions" title="Actions">⋯</button>
+                                <div class="room-menu">
+                                    ${isCreator ? `<button class="room-menu-item room-delete" data-room-id="${room.id}" data-room-name="${escapeHtml(room.name)}">Delete room</button>` : ''}
+                                </div>
                             </div>
-                            <div style="font-size: 12px; opacity: 0.8;">${statusText}</div>
                         `;
+
+                        roomEl.innerHTML = `
+                            <div class="room-main">
+                                <div>
+                                    <strong>${escapeHtml(room.name)}</strong>
+                                    ${room.is_private ? '<span style="color: var(--secondary-color); font-size: 12px; margin-left: 5px;">🔒 Private</span>' : ''}
+                                    ${room.user_active === false ? '<span style="color: #ff6b6b; font-size: 12px; margin-left: 5px;">⚠ Inactive</span>' : ''}
+                                </div>
+                                <div style="font-size: 12px; opacity: 0.8;">${statusText}</div>
+                            </div>
+                            ${menuHtml}
+                        `;
+
+                        // Wire menu actions
+                        const menuBtn = roomEl.querySelector('.room-menu-btn');
+                        const menu = roomEl.querySelector('.room-menu');
+                        if (menuBtn && menu) {
+                            menuBtn.addEventListener('click', (e) => {
+                                e.stopPropagation();
+                                closeAllRoomMenus();
+                                menu.classList.toggle('show');
+                            });
+                        }
+                        const delBtn = roomEl.querySelector('.room-delete');
+                        if (delBtn) {
+                            delBtn.addEventListener('click', (e) => {
+                                e.stopPropagation();
+                                const rid = delBtn.getAttribute('data-room-id');
+                                const rname = delBtn.getAttribute('data-room-name');
+                                deleteRoom(rid, rname);
+                            });
+                        }
                         roomsContainer.appendChild(roomEl);
                     });
                 } else {
@@ -1422,15 +1459,47 @@ function updateActiveRoomsDisplay(activeRooms) {
                         }
                     }
                     
-                    roomEl.innerHTML = `
-                        <div>
-                            <strong>${escapeHtml(room.name)}</strong>
-                            ${room.is_private ? '<span style="color: var(--secondary-color); font-size: 12px; margin-left: 5px;">🔒 Private</span>' : ''}
-                            ${room.user_active === false ? '<span style="color: #ff6b6b; font-size: 12px; margin-left: 5px;">⚠ Inactive</span>' : ''}
-                            ${activeCount > 0 ? '<span style="color: #4CAF50; font-size: 12px; margin-left: 5px;">● Online</span>' : ''}
+                    const isCreator = (room.is_creator === true) || (!!room.creator_id && currentUser && room.creator_id === currentUser.id);
+                    const menuHtml = `
+                        <div class="room-actions">
+                            <button class="room-menu-btn" aria-label="Room actions" title="Actions">⋯</button>
+                            <div class="room-menu">
+                                ${isCreator ? `<button class="room-menu-item room-delete" data-room-id="${room.id}" data-room-name="${escapeHtml(room.name)}">Delete room</button>` : ''}
+                            </div>
                         </div>
-                        <div style="font-size: 12px; opacity: 0.8;">${statusText}</div>
                     `;
+
+                    roomEl.innerHTML = `
+                        <div class="room-main">
+                            <div>
+                                <strong>${escapeHtml(room.name)}</strong>
+                                ${room.is_private ? '<span style="color: var(--secondary-color); font-size: 12px; margin-left: 5px;">🔒 Private</span>' : ''}
+                                ${room.user_active === false ? '<span style="color: #ff6b6b; font-size: 12px; margin-left: 5px;">⚠ Inactive</span>' : ''}
+                                ${activeCount > 0 ? '<span style="color: #4CAF50; font-size: 12px; margin-left: 5px;">● Online</span>' : ''}
+                            </div>
+                            <div style="font-size: 12px; opacity: 0.8;">${statusText}</div>
+                        </div>
+                        ${menuHtml}
+                    `;
+
+                    const menuBtn = roomEl.querySelector('.room-menu-btn');
+                    const menu = roomEl.querySelector('.room-menu');
+                    if (menuBtn && menu) {
+                        menuBtn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            closeAllRoomMenus();
+                            menu.classList.toggle('show');
+                        });
+                    }
+                    const delBtn = roomEl.querySelector('.room-delete');
+                    if (delBtn) {
+                        delBtn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            const rid = delBtn.getAttribute('data-room-id');
+                            const rname = delBtn.getAttribute('data-room-name');
+                            deleteRoom(rid, rname);
+                        });
+                    }
                     roomsContainer.appendChild(roomEl);
                 });
                 
@@ -1466,6 +1535,44 @@ function updateActiveRoomsDisplay(activeRooms) {
         .catch(error => {
             debugLog(`Error updating active rooms display: ${error}`);
         });
+}
+
+// Close any open room menus
+function closeAllRoomMenus() {
+    document.querySelectorAll('.room-menu.show').forEach(m => m.classList.remove('show'));
+}
+
+// Delete a room via REST API
+function deleteRoom(roomId, roomName) {
+    if (!roomId) return;
+    if (!confirm(`Delete room "${roomName}"? This will remove all messages and media.`)) return;
+    fetch(`/api/rooms/${roomId}`, {
+        method: 'DELETE',
+        credentials: 'include'
+    })
+    .then(async (resp) => {
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.error) {
+            throw new Error(data.error || `HTTP ${resp.status}`);
+        }
+        // If deleting the current room, clear UI and return to start screen
+        if (currentRoom === roomName) {
+            clearMessages();
+            currentRoom = '';
+            updateConnectionStatus('Disconnected');
+            if (ws) {
+                try { ws.close(); } catch {}
+            }
+            // Hide chat, show start screen
+            chatInterface.classList.add('hidden');
+            if (startScreen) startScreen.classList.remove('hidden');
+        }
+        loadActiveRooms();
+        closeAllRoomMenus();
+    })
+    .catch(err => {
+        alert(`Failed to delete room: ${err.message}`);
+    });
 }
 
 function escapeHtml(text) {
@@ -1911,6 +2018,7 @@ function clearMediaPreview() {
     // Clear image preview
     imagePreview.classList.remove('show');
     imagePreview.style.display = 'none';
+    
     
     // Clear video preview - need extra steps for video
     videoPreview.classList.remove('show');
@@ -2404,6 +2512,8 @@ window.addEventListener('load', () => {
             loadActiveRooms();
         }
     });
+    // Close room menus on outside click
+    document.addEventListener('click', () => closeAllRoomMenus());
 });
 
 // Private Room Creation functionality

@@ -63,6 +63,21 @@ func GetRooms(c *gin.Context) {
 			clientCount = len(activeRoom)
 		}
 
+		// Determine if current user is creator of this room (for DB-backed rooms with numeric ID)
+		isCreator := false
+		switch idVal := dbRoom["id"].(type) {
+		case uint:
+			if okRoom, err := roomService.IsRoomCreator(dbUser.ID, idVal); err == nil {
+				isCreator = okRoom
+			}
+		case int:
+			if idVal >= 0 {
+				if okRoom, err := roomService.IsRoomCreator(dbUser.ID, uint(idVal)); err == nil {
+					isCreator = okRoom
+				}
+			}
+		}
+
 		rooms = append(rooms, gin.H{
 			"id":          dbRoom["id"],
 			"name":        roomName,
@@ -71,6 +86,8 @@ func GetRooms(c *gin.Context) {
 			"count":       clientCount,
 			"memberCount": dbRoom["memberCount"], // Total members from DB
 			"is_private":  dbRoom["is_private"],
+			"creator_id":  dbRoom["creator_id"],
+			"is_creator":  isCreator,
 		})
 	}
 
@@ -314,9 +331,14 @@ func CreatePrivateRoom(c *gin.Context) {
 // CreatePublicRoom creates a new public room
 func CreatePublicRoom(c *gin.Context) {
 	// Get user from auth middleware
-	_, exists := c.Get("user")
+	userInterface, exists := c.Get("user")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		return
+	}
+	user, ok := userInterface.(*middleware.SessionUser)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user data"})
 		return
 	}
 
@@ -336,6 +358,13 @@ func CreatePublicRoom(c *gin.Context) {
 	}
 
 	roomService := services.NewRoomService()
+	userService := services.NewUserService()
+	// Get creator db user
+	creator, err := userService.CreateOrGetUser(user.Name, user.Email, user.Avatar)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user"})
+		return
+	}
 
 	// Check if room already exists
 	existingRoom, err := roomService.GetRoomByName(req.RoomName)
@@ -344,8 +373,8 @@ func CreatePublicRoom(c *gin.Context) {
 		return
 	}
 
-	// Create public room
-	room, err := roomService.CreateOrGetRoom(req.RoomName)
+	// Create public room with creator
+	room, err := roomService.CreatePublicRoom(req.RoomName, "", creator.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create public room"})
 		return
@@ -356,9 +385,54 @@ func CreatePublicRoom(c *gin.Context) {
 			"id":         room.ID,
 			"name":       room.Name,
 			"is_private": room.IsPrivate,
+			"creator_id": room.CreatorID,
 		},
 	})
 
 	// Broadcast room update to all connected clients
 	go broadcastRoomUpdate(room.Name)
+}
+
+// DeleteRoom deletes a room (creator only)
+func DeleteRoom(c *gin.Context) {
+	// Auth
+	userInterface, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		return
+	}
+	user, ok := userInterface.(*middleware.SessionUser)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user data"})
+		return
+	}
+
+	// Parse room ID
+	roomIDStr := c.Param("roomId")
+	id64, err := strconv.ParseUint(roomIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid room id"})
+		return
+	}
+
+	userService := services.NewUserService()
+	roomService := services.NewRoomService()
+
+	// Get DB user to access numeric ID
+	dbUser, err := userService.CreateOrGetUser(user.Name, user.Email, user.Avatar)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user"})
+		return
+	}
+
+	// Delete
+	if err := roomService.DeleteRoom(uint(id64), dbUser.ID); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+
+	// Broadcast update
+	go broadcastRoomUpdate("")
 }

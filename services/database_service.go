@@ -170,6 +170,54 @@ func (s *RoomService) CreateOrGetRoom(name string) (*models.Room, error) {
 	return &room, nil
 }
 
+// CreatePublicRoom creates a new public room and assigns the creator
+func (s *RoomService) CreatePublicRoom(name, description string, creatorID uint) (*models.Room, error) {
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Ensure unique name
+	var existing models.Room
+	if err := tx.Where("name = ?", name).First(&existing).Error; err == nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("room already exists")
+	}
+
+	room := models.Room{
+		Name:        name,
+		Description: description,
+		IsPrivate:   false,
+		CreatorID:   &creatorID,
+	}
+	if err := tx.Create(&room).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	// Add creator as member with creator role
+	creatorMember := models.RoomMember{
+		UserID:   creatorID,
+		RoomID:   room.ID,
+		Role:     "creator",
+		IsActive: true,
+	}
+	if err := tx.Create(&creatorMember).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, err
+	}
+	return &room, nil
+}
+
 // CreatePrivateRoom creates a new private room with specified members
 func (s *RoomService) CreatePrivateRoom(name, description string, creatorID uint, memberUserIDs []uint) (*models.Room, error) {
 	// Start transaction
@@ -271,6 +319,7 @@ func (s *RoomService) GetAllRooms() ([]map[string]interface{}, error) {
 			"description": room.Description,
 			"memberCount": memberCount,
 			"is_private":  room.IsPrivate,
+			"creator_id":  room.CreatorID,
 		})
 	}
 
@@ -317,6 +366,7 @@ func (s *RoomService) GetUserRooms(userID uint) ([]map[string]interface{}, error
 			"memberCount": memberCount,
 			"is_private":  roomWithStatus.IsPrivate,
 			"user_active": roomWithStatus.IsActive, // Add user's membership status
+			"creator_id":  roomWithStatus.CreatorID,
 		})
 	}
 
@@ -521,6 +571,113 @@ func (s *MessageService) deleteMediaFile(mediaURL string) error {
 	}
 
 	fmt.Printf("Successfully deleted media file: %s\n", filePath)
+	return nil
+}
+
+// IsRoomCreator checks if the given user is the creator of the room (by Room.CreatorID or creator role membership)
+func (s *RoomService) IsRoomCreator(userID, roomID uint) (bool, error) {
+	var room models.Room
+	if err := s.db.First(&room, roomID).Error; err != nil {
+		return false, err
+	}
+	if room.CreatorID != nil && *room.CreatorID == userID {
+		return true, nil
+	}
+	// Fallback: check membership with creator role
+	var count int64
+	if err := s.db.Model(&models.RoomMember{}).
+		Where("room_id = ? AND user_id = ? AND role = ?", roomID, userID, "creator").
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// DeleteRoom deletes a room and cascades deletion to messages, reactions, media files and memberships
+func (s *RoomService) DeleteRoom(roomID, userID uint) error {
+	// Authorization: only creator can delete
+	isCreator, err := s.IsRoomCreator(userID, roomID)
+	if err != nil {
+		return err
+	}
+	if !isCreator {
+		return fmt.Errorf("not authorized to delete this room")
+	}
+
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Load room
+	var room models.Room
+	if err := tx.First(&room, roomID).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Collect message IDs for this room
+	var messages []models.Message
+	if err := tx.Where("room_id = ?", roomID).Find(&messages).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	messageIDs := make([]uint, 0, len(messages))
+	for _, m := range messages {
+		messageIDs = append(messageIDs, m.ID)
+	}
+
+	// Delete reactions for these messages
+	if len(messageIDs) > 0 {
+		if err := tx.Where("message_id IN ?", messageIDs).Delete(&models.MessageReaction{}).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to delete message reactions: %w", err)
+		}
+		// Clear reply references to these messages
+		if err := tx.Model(&models.Message{}).Where("reply_to_id IN ?", messageIDs).Update("reply_to_id", nil).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to clear reply references: %w", err)
+		}
+	}
+
+	// Delete media files for media messages
+	if len(messages) > 0 {
+		ms := NewMessageService()
+		for _, m := range messages {
+			if m.Type == "media" && m.MediaURL != "" {
+				if err := ms.deleteMediaFile(m.MediaURL); err != nil {
+					fmt.Printf("Warning: failed to delete media file %s: %v\n", m.MediaURL, err)
+				}
+			}
+		}
+	}
+
+	// Hard delete messages
+	if err := tx.Unscoped().Where("room_id = ?", roomID).Delete(&models.Message{}).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to delete messages: %w", err)
+	}
+
+	// Delete room memberships
+	if err := tx.Where("room_id = ?", roomID).Delete(&models.RoomMember{}).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to delete room members: %w", err)
+	}
+
+	// Finally hard delete the room
+	if err := tx.Unscoped().Delete(&room).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to delete room: %w", err)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
 	return nil
 }
 

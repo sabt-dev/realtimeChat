@@ -65,6 +65,7 @@ func main() {
 	r.GET("/api/users/search", middleware.AuthMiddleware(), handlers.SearchUsers)
 	r.POST("/api/rooms/private", middleware.AuthMiddleware(), handlers.CreatePrivateRoom)
 	r.POST("/api/rooms/public", middleware.AuthMiddleware(), handlers.CreatePublicRoom)
+	r.DELETE("/api/rooms/:roomId", middleware.AuthMiddleware(), handlers.DeleteRoom)
 
 	log.Println("Server starting on :8080")
 	r.Run(":8080")
